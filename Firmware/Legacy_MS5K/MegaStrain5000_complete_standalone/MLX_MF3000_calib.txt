@@ -1,0 +1,23 @@
+dt 0.00250600
+MS: 591261	read took: 1413
+MLX 0 data mx: -2.2875	 my: 40.9012	 mz: -130.8857
+MLX ranges mx: 30.9525	 -61.4063	 my: 126.3938	 32.2238	 mz: -66.6408	 -162.7026
+MLX 0 calib mx_hardiron: -15.2269	 my_hardiron: 79.3088	 mz_hardiron: -114.6717	 mx_softiron: 0.0217	 my_softiron: 0.0212	 mz_softiron: 0.0208
+MLX normalized mx: 0.2802	 my: -0.8157	 mz: -0.3376
+MLX 1 data mx: -21.2475	 my: -68.1863	 mz: -18.7671
+MLX ranges mx: 71.5462	 -37.5563	 my: -29.4787	 -131.4937	 mz: 59.6954	 -56.8034
+MLX 1 calib mx_hardiron: 16.9950	 my_hardiron: -80.4862	 mz_hardiron: 1.4460	 mx_softiron: 0.0183	 my_softiron: 0.0196	 mz_softiron: 0.0172
+MLX normalized mx: -0.7010	 my: 0.2411	 mz: -0.3470
+MLX 2 data mx: 54.8887	 my: -5.6812	 mz: 17.9927
+MLX ranges mx: 70.9725	 -31.8938	 my: 9.2775	 -87.1500	 mz: 72.5879	 -31.8714
+MLX 2 calib mx_hardiron: 19.5394	 my_hardiron: -38.9363	 mz_hardiron: 20.3583	 mx_softiron: 0.0194	 my_softiron: 0.0207	 mz_softiron: 0.0191
+MLX normalized mx: 0.6873	 my: 0.6897	 mz: -0.0453
+MLX 3 data mx: 34.4438	 my: -11.5125	 mz: 17.7507
+MLX ranges mx: 74.0250	 -29.1788	 my: 4.7550	 -95.0025	 mz: 55.6661	 -49.9125
+MLX 3 calib mx_hardiron: 22.4231	 my_hardiron: -45.1238	 mz_hardiron: 2.8768	 mx_softiron: 0.0194	 my_softiron: 0.0200	 mz_softiron: 0.0189
+MLX normalized mx: 0.2329	 my: 0.6739	 mz: 0.2818
+MLX 4 data mx: -12.3112	 my: -67.8262	 mz: 30.6856
+MLX ranges mx: 78.7200	 -15.4350	 my: -0.7238	 -98.3100	 mz: 85.8918	 -9.0569
+MLX 4 calib mx_hardiron: 31.6425	 my_hardiron: -49.5169	 mz_hardiron: 38.4175	 mx_softiron: 0.0212	 my_softiron: 0.0205	 mz_softiron: 0.0211
+MLX normalized mx: -0.9336	 my: -0.3752	 mz: -0.1629
+read took: 260
