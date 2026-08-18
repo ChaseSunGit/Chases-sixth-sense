@@ -1,0 +1,5 @@
+# fabrication files
+This folder contains the Gerber file, Pick-and-place (P&P) file, and Bill of materials (BOM) for the PCB design. These files can be directly uploaded to JLCPCB's PCB manufacturing service for printing and assembly. Make sure to select standard assembly with SMT on both sides.
+
+## DISCLAIMER
+The fab files in this folder contain a panelized version of the sensor PCB which requests 6 sensors to be manufactured on the same board. When you receive the PCB, you can simply break apart the boards along the V-cuts made during the panelization process. This is a significantly less costly method of ordering these sensors compared to manufacturing 1 sensor at a time. If you want to panelize the PCBs differently, use the source files in the PCB folder to customize and regenerate fab files as needed.
