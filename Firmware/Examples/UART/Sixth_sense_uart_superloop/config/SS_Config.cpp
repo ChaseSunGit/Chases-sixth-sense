@@ -19,6 +19,10 @@ volatile bool new_data_ready = false;
 bool IMU_first_read = false;
 ICM_Data ICM_Data_Holder;
 
+//Static variables for pure internal use
+static Preferences imu_prefs;
+static const char *NVS_NAMESPACE = "ICM_cfg";
+
 
 // FUNCTIONS
 
@@ -193,7 +197,7 @@ bool ICM_init_chip(uint8_t outputRate = 2) {
             Serial.println("Report frequency can be only (5) 1600 / (4) 800 / (3) 400 / (2) 200 / (1) 100 hz.");
             return false;
       }
-
+      ICM_Data_Holder.frequency = reportFrequency;
       
       //Set up the interrupts
       //Set in pulse mode, push pull, active high, 0b00 011011 0x1B
@@ -380,7 +384,7 @@ float moving_average(float *buffer, float new_val, int &ma_index){
  * \brief Function to calibrate the accelerometer. This should be called during first time start up with calibration values stored in the on board SPI flash memory
  * \return success of calibration
  */
-bool ICM_accel_calib(int num_samples){
+bool ICM_accel_calib(){
 
       ICM_Data_Holder.ax_offset = 0;
       ICM_Data_Holder.ay_offset = 0;
@@ -409,13 +413,13 @@ bool ICM_accel_calib(int num_samples){
       
       ICM_Data_Holder.ax_offset = ax_avg/((float)sample_count);
       ICM_Data_Holder.ay_offset = ay_avg/((float)sample_count);
-      ICM_Data_Holder.az_offset = ax_avg/((float)sample_count);//Subtracting the gravity vector
+      ICM_Data_Holder.az_offset = ax_avg/((float)sample_count)-9.81;//Subtracting the gravity vector
 
-      Serial.printf("IMU accel offsets: x: %.4f, y: %.4f, z: %.4f\n", ICM_Data_Holder.ax_offset,ICM_Data_Holder.ay_offset,ICM_Data_Holder.az_offset);    
+      Serial.printf("IMU accel offsets: x: %.4f, y: %.4f, z: %.4f\n", , ICM_Data_Holder.ax_offset,ICM_Data_Holder.ay_offset,ICM_Data_Holder.az_offset);    
 
-      Serial.println("Accel calibration complete!");
+      Serial.println("Calibration complete!");
 
-      return 1;
+
 
 }
 
@@ -423,41 +427,7 @@ bool ICM_accel_calib(int num_samples){
  * \brief Function to calibrate the gyroscope. This should be called during first time start up with calibration values stored in the on board SPI flash memory
  * \return success of calibration
  */
-bool ICM_gyro_calib(int num_samples){
-      ICM_Data_Holder.gx_offset = 0;
-      ICM_Data_Holder.gy_offset = 0;
-      ICM_Data_Holder.gz_offset = 0;//Zero all offsets to generate new set
-
-      float gx_avg = 0;
-      float gy_avg = 0;
-      float gz_avg = 0;//Accumilated average
-
-      int sample_count = 0;
-      while (sample_count < num_samples){
-
-            if (new_data_ready) {
-                  sample_count ++;
-
-                  new_data_ready = false;
-                  ICM_single_read();
-                  //Serial.printf("ICM Data: %.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\n",ICM_Data_Holder.ax,ICM_Data_Holder.ay,ICM_Data_Holder.az,ICM_Data_Holder.gx,ICM_Data_Holder.gy,ICM_Data_Holder.gz);
-                  gx_avg += ICM_Data_Holder.gx;
-                  gy_avg += ICM_Data_Holder.gy;
-                  gz_avg += ICM_Data_Holder.gz;
-            }
-            
-      }
-      //Now that the requsite samples are collected, average the offsets
-      
-      ICM_Data_Holder.gx_offset = gx_avg/((float)sample_count);
-      ICM_Data_Holder.gy_offset = gy_avg/((float)sample_count);
-      ICM_Data_Holder.gz_offset = gx_avg/((float)sample_count);//Subtracting the gravity vector
-
-      Serial.printf("IMU gyro offsets: x: %.4f, y: %.4f, z: %.4f\n", ICM_Data_Holder.gx_offset,ICM_Data_Holder.gy_offset,ICM_Data_Holder.gz_offset);    
-
-      Serial.println("Gyro calibration complete!");
-
-      return 1;
+bool ICM_gyro_calib(){
 
 }
 

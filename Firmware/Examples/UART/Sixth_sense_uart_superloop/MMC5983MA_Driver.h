@@ -65,7 +65,7 @@ extern bool IMU_first_read;
 
 // CLASSES
 
-struct ICM_Data {
+struct MAG_Data {
 
     int frequency; //Data rate setting for ICM
 
