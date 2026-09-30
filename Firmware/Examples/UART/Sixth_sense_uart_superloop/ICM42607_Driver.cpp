@@ -1,23 +1,26 @@
 /**
  * \file      ICM42607_Driver.cpp
- * \brief       Library for interfacing with ICM42607.
+ * \brief     Library for interfacing with ICM42607.
  *
- * \authors     Chase Sun
- * \bug
+ * \authors   Chase Sun
  */
 
 // INCLUDES
 #include "ICM42607_Driver.h"
 
+
 // Initialze the global variables declared in the header
+//Variables used for SPI communication
 spi_device_handle_t spi_ICM = NULL;
-uint8_t *dma_tx_ICM = nullptr;
-uint8_t *dma_rx_ICM = nullptr;
-spi_transaction_t dma_trans_ICM;
+SPI_DMA_Channel SPI_DMA_ICM = {};
+
+//Flags for data ready
 volatile bool dma_in_progress = false;
-volatile bool new_data_ready = false;
+volatile bool new_data_ready_ICM = false;
 bool IMU_first_read = false;
-ICM_Data ICM_Data_Holder;
+
+//Data holding structure
+ICM_Data ICM_Data_Holder = {};
 
 
 // FUNCTIONS
@@ -28,7 +31,7 @@ ICM_Data ICM_Data_Holder;
 void IRAM_ATTR IMU_ISR_dataReady() {
       if (!dma_in_progress) {
             // Queue the pre-armed DMA transaction with zero tick delay
-            if (spi_device_queue_trans(spi_ICM, &dma_trans_ICM, 0) == ESP_OK) {
+            if (spi_device_queue_trans(spi_ICM, &SPI_DMA_ICM.trans, 0) == ESP_OK) {
                   dma_in_progress = true;
             }
       }
@@ -36,62 +39,10 @@ void IRAM_ATTR IMU_ISR_dataReady() {
 
 //ISR for DMA SPI Transaction complete
 void IRAM_ATTR IMU_ISR_DMAcomplete_callback(spi_transaction_t *trans) {
-      new_data_ready = true; //Raise flag for buffer full
+      new_data_ready_ICM = true; //Raise flag for buffer full
 }
 
-/**
- * \brief Tool to config SPI BUS
- *
- * \return
- */
- bool ICM_SPI_config(){
-      spi_bus_config_t buscfg = {};
-      buscfg.mosi_io_num = PIN_MOSI;
-      buscfg.miso_io_num = PIN_MISO;
-      buscfg.sclk_io_num = PIN_SCLK;
-      buscfg.quadwp_io_num = -1;
-      buscfg.quadhd_io_num = -1;
-      buscfg.max_transfer_sz = 4096;
-      esp_err_t err = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
-      if (err != ESP_OK) return false;
 
-      spi_device_interface_config_t devcfg = {};
-
-      devcfg.clock_speed_hz = 10 * 1000 * 1000; // 10 MHz
-      devcfg.mode = 0;                    // SPI Mode 0
-      devcfg.spics_io_num = PIN_CS;
-      devcfg.queue_size = 2;                // Allows for 2 transactions at a time to give a bit of space
-      devcfg.post_cb = IMU_ISR_DMAcomplete_callback;        // register the callback function
-      err = spi_bus_add_device(SPI2_HOST, &devcfg, &spi_ICM);
-      return (err == ESP_OK);
-}
-
-/**
- * \brief Set up DMA buffer for ICM
- *
- * \return
- */
-bool ICM_DMA_config() {
-      // 1. Allocate buffers in internal, DMA-accessible SRAM
-      dma_tx_ICM = (uint8_t *)heap_caps_malloc(ICM_BURST_LEN, MALLOC_CAP_DMA);//The TX buffer matches the RX buffer to send 0s during read for full duplex operation
-      dma_rx_ICM = (uint8_t *)heap_caps_malloc(ICM_BURST_LEN, MALLOC_CAP_DMA);
-
-      if (!dma_tx_ICM || !dma_rx_ICM) {
-            return false; //Check if the heap memory is correctly assigned
-      }
-
-      // 2. Pre-arm the TX buffer with the register address command
-      memset(dma_tx_ICM, 0, ICM_BURST_LEN);
-      dma_tx_ICM[0] = DATA_START_ICM | SPI_READ_FLAG; //Address | flag + zeros the rest of the way
-
-      // 3. Pre-arm the reusable transaction manifest
-      memset(&dma_trans_ICM, 0, sizeof(spi_transaction_t)); 
-      dma_trans_ICM.length = ICM_BURST_LEN * 8; // Bit count (8 * 8 = 64 bits), SPI DMA driver uses bits to write/read exactly 8 bytes of data
-      dma_trans_ICM.tx_buffer = dma_tx_ICM;
-      dma_trans_ICM.rx_buffer = dma_rx_ICM;
-
-      return true;
-}
 
 /**
  * \brief Tool to write SPI command to a register
@@ -108,7 +59,6 @@ void ICM_write_reg(uint8_t reg, uint8_t data) {
     t.tx_data[1] = data;
     spi_device_polling_transmit(spi_ICM, &t);
 }
-
 
 
 /**
@@ -139,10 +89,30 @@ uint8_t ICM_read_reg(uint8_t reg) {
  *                      5. 1600hz
  * \return boolean value true meaning successfully initialized and false failed
  */
-bool ICM_init_chip(uint8_t outputRate = 2) {
+bool ICM_init_chip(uint8_t outputRate) {
 
       ICM_Data_Holder = {};//Empty out any holder value during initialization
-      
+
+      //First setup the SPI bus
+
+      // Initialize the SPI bus
+      if (!SPI_Bus_Init(PIN_MOSI_ICM, PIN_MISO_ICM, PIN_SCLK_ICM)) {
+            Serial.println("SPI host initialization failed!");
+            return 0;
+      }
+
+      // Add the specific SPI device
+      if (!SPI_Add_Device(PIN_CS_ICM, IMU_ISR_DMAcomplete_callback, SPI_DMA_ICM.handle)) {
+            Serial.println("Could not add ICM Device!");
+            return 0;
+      }
+
+      // Initialize the SPI bus
+      if (!SPI_Arm_DMA_Channel(ICM_BURST_LEN, (DATA_START_ICM  | SPI_READ_FLAG), SPI_DMA_ICM)) {
+            Serial.println("DMA setup for ICM failed!");
+            return 0;
+      }
+
       //For configuration, we do 7 steps
       //1. set filter bandwidth
       //2. Set divider for reporting frequency - 400 hz default, controls the low level control loop speed if IMU mode is enabled
@@ -239,29 +209,29 @@ bool ICM_init_chip(uint8_t outputRate = 2) {
  bool ICM_single_read(){
 
       spi_transaction_t *r_trans;
-      if (spi_device_get_trans_result(spi_ICM, &r_trans, 0) == ESP_OK) {
-            dma_in_progress = false;
+
+      if (spi_device_get_trans_result(spi_ICM, &r_trans, 0) != ESP_OK) {
+            
       }
-      else{
-            return false;
-      }
+
+      dma_in_progress = false;
       
 
       // Make the read
 
 
       // Unpack raw 16-bit values
-      int16_t temp_raw = (int16_t)((dma_rx_ICM[1]  << 8) | dma_rx_ICM[2]);
+      int16_t temp_raw = (int16_t)((SPI_DMA_ICM.rx_buffer[1]  << 8) | SPI_DMA_ICM.rx_buffer[2]);
 
       ICM_Data_Holder.temp  = ((float)temp_raw / 128.0f) + 25.0f;
 
-      int16_t ax_raw = (int16_t)((dma_rx_ICM[3]  << 8) | dma_rx_ICM[4]);
-      int16_t ay_raw = (int16_t)((dma_rx_ICM[5]  << 8) | dma_rx_ICM[6]);
-      int16_t az_raw = (int16_t)((dma_rx_ICM[7]  << 8) | dma_rx_ICM[8]);
+      int16_t ax_raw = (int16_t)((SPI_DMA_ICM.rx_buffer[3]  << 8) | SPI_DMA_ICM.rx_buffer[4]);
+      int16_t ay_raw = (int16_t)((SPI_DMA_ICM.rx_buffer[5]  << 8) | SPI_DMA_ICM.rx_buffer[6]);
+      int16_t az_raw = (int16_t)((SPI_DMA_ICM.rx_buffer[7]  << 8) | SPI_DMA_ICM.rx_buffer[8]);
       
-      int16_t gx_raw = (int16_t)((dma_rx_ICM[9]  << 8) | dma_rx_ICM[10]);
-      int16_t gy_raw = (int16_t)((dma_rx_ICM[11] << 8) | dma_rx_ICM[12]);
-      int16_t gz_raw = (int16_t)((dma_rx_ICM[13] << 8) | dma_rx_ICM[14]);
+      int16_t gx_raw = (int16_t)((SPI_DMA_ICM.rx_buffer[9]  << 8) | SPI_DMA_ICM.rx_buffer[10]);
+      int16_t gy_raw = (int16_t)((SPI_DMA_ICM.rx_buffer[11] << 8) | SPI_DMA_ICM.rx_buffer[12]);
+      int16_t gz_raw = (int16_t)((SPI_DMA_ICM.rx_buffer[13] << 8) | SPI_DMA_ICM.rx_buffer[14]);
 
       // --- Conversion constants (match your configured ranges) ---
       // Accel LSB per g: ±2g=16384, ±4g=8192, ±8g=4096, ±16g=2048
@@ -393,10 +363,10 @@ bool ICM_accel_calib(int num_samples){
       int sample_count = 0;
       while (sample_count < num_samples){
 
-            if (new_data_ready) {
+            if (new_data_ready_ICM) {
                   sample_count ++;
 
-                  new_data_ready = false;
+                  new_data_ready_ICM = false;
                   ICM_single_read();
                   //Serial.printf("ICM Data: %.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\n",ICM_Data_Holder.ax,ICM_Data_Holder.ay,ICM_Data_Holder.az,ICM_Data_Holder.gx,ICM_Data_Holder.gy,ICM_Data_Holder.gz);
                   ax_avg += ICM_Data_Holder.ax;
@@ -435,10 +405,10 @@ bool ICM_gyro_calib(int num_samples){
       int sample_count = 0;
       while (sample_count < num_samples){
 
-            if (new_data_ready) {
+            if (new_data_ready_ICM) {
                   sample_count ++;
 
-                  new_data_ready = false;
+                  new_data_ready_ICM = false;
                   ICM_single_read();
                   //Serial.printf("ICM Data: %.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\n",ICM_Data_Holder.ax,ICM_Data_Holder.ay,ICM_Data_Holder.az,ICM_Data_Holder.gx,ICM_Data_Holder.gy,ICM_Data_Holder.gz);
                   gx_avg += ICM_Data_Holder.gx;

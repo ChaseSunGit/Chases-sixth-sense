@@ -1,123 +1,97 @@
 /**
- * \file ICM42607_Driver.h
- * \brief Library for low level interfacing with the MPU6050. Use instead of arduino library if high speed application is needed.
- * TODO: 
- *
+ * \file MMC5983MA_Driver.h
+ * \brief Header file for driving the MMC5983MA Magnetometer
+
  * \author Chase Sun
- * \bug
  */
 
-#ifndef ICM42607_DRIVER_H
-#define ICM42607_DRIVER_H
+#ifndef MMC5983MA_DRIVER_H
+#define MMC5983MA_DRIVER_H
 
-// INCLUDES
 #include <Arduino.h>
-#include <Kalman.h>
-#include <Preferences.h> //Used for saving to SPI flash memory
+#include <Math.h>
+#include <String.h>
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
-
+#include "Sixth_sense_SPI.h"
 
 // CONSTANTS/MACROS
-// Read length: 1 byte address header (Echo when writing register) + 14 payload bytes (2 temp, 3 accel, 3 gyro) = 15 bytes total
-#define ICM_BURST_LEN 15
-#define Moving_average_windowSize 10
+// Read length: 1 byte address + 6 bytes payload (X, Y, Z 16-bit) + 1 byte (XYZ 18-bit LSBs) = 8 bytes total, ignore temp
+#define MMC_BURST_LEN   8
+#define COUNTS_PER_G_18 16384.0f // 18-bit counts per Gauss for ±2G range
+#define NULL_FIELD_18   131072.0f // 18-bit null field value for sensitivity compensation
 
-// SPI device using SPI_HOST2
-extern spi_device_handle_t spi_ICM;
+// SPI Pins
+#define PIN_INT_MMC     4   // Mag Data Ready Interrupt
+#define PIN_MISO_MMC    8   // Sensor SDO
+#define PIN_MOSI_MMC    9   // Sensor SDI
+#define PIN_SCLK_MMC    10  // SCLK
+#define PIN_CS_MMC      13  // CS
 
-// DMA buffers for read and write sequences to be assigned to internal memory
-extern uint8_t *dma_tx_ICM;
-extern uint8_t *dma_rx_ICM;
+// MMC5983MA Registers
+#define MMC_XOUT0       0x00
+#define MMC_XOUT1       0x01
+#define MMC_YOUT0       0x02
+#define MMC_YOUT1       0x03
+#define MMC_ZOUT0       0x04
+#define MMC_ZOUT1       0x05
+#define MMC_XYZOUT2     0x06
+#define MMC_TOUT        0x07
+#define MMC_STATUS      0x08
+#define MMC_CTRL0       0x09
+#define MMC_CTRL1       0x0A
+#define MMC_CTRL2       0x0B
+#define MMC_CTRL3       0x0C
+#define MMC_PROD_ID     0x2F
 
-// Persistent transaction descriptor for async DMA
-extern spi_transaction_t dma_trans_ICM;
-extern volatile bool dma_in_progress;
-extern volatile bool new_data_ready;
+// SPI Command Masks
+#define MMC_SPI_READ_FLAG 0x80 // Bit 0 (MSB) = 1 for Read
+#define MMC_SPI_ADDR_MASK 0x3F // Bits 2-7 contain the 6-bit address
 
-extern bool IMU_first_read;
+// STRUCTURES
+struct MMC_Data {
+      // Field readings in Gauss
+      float mx;
+      float my;
+      float mz;
 
+      //Tracked post calibration readings
+      float mx_cal;
+      float my_cal;
+      float mz_cal;
 
-//SPI Pins
-#define PIN_INT_ICM 7   // IMU Data Ready Interrupt
-#define PIN_MISO    8   // Sensor SDO
-#define PIN_MOSI    9   // Sensor SDI
-#define PIN_SCLK    10  // SCLK
-#define PIN_CS      11  // CS
+      //Frequency
+      int reportFrequency; // The frequency at which the sensor is reporting data
 
-// ICM 42607 registers
-#define WHO_AM_I_ICM        0x75
-
-#define INT_CONFIG_ICM      0x06
-#define INT_SOURCE0_ICM     0x2B // Source 0 chooses the source of interrupt for int1
-#define INT_SOURCE3_ICM     0x2D // Source 3 chooses the source of interrupt for int 2
-
-#define PWR_MGMT0_ICM       0x1F
-#define GYRO_CONFIG0_ICM    0x20
-#define ACCEL_CONFIG0_ICM   0x21
-#define GYRO_CONFIG1_ICM    0x23
-#define ACCEL_CONFIG1_ICM   0x24
-
-#define DATA_START_ICM      0x09 // Start from temp
-
-#define SPI_READ_FLAG       0x80 //For adding to 7-bit address to identify a read operation. A write will lead with a 0 so no operation required
-
-
-// CLASSES
-
-struct MAG_Data {
-
-    int frequency; //Data rate setting for ICM
-
-    float temp; //Temp of sensor for corrections
-
-    float ax; // Acceleration X
-    float ay; // Acceleration Y
-    float az; // Acceleration Z
-    float ax_offset; //Gyro x calibrated offset. These offsets are constant and are found through the factory calibration function and set manually
-    float ay_offset; //Gyro y calibrated offset
-    float az_offset; //Gyro z calibrated offset
-
-    float gx; // Gyro X
-    float gy; // Gyro Y
-    float gz; // Gyro Z
-    float gx_offset; //Gyro x calibrated offset
-    float gy_offset; //Gyro y calibrated offset
-    float gz_offset; //Gyro z calibrated offset
-
-    Kalman kalmanRoll;//Roll kalman object
-    Kalman kalmanPitch;//Pitch kalman object
-    Kalman kalmanYaw; //Yaw kalman object
-    float roll; //Euler angles
-    float pitch;
-    float yaw;
-
+      //Calibration
+      //Hard iron - constant offsets
+      float offset[3];
+      //Soft iron - 3x3 correction Matrix
+      float W[3][3];
 };
 
-extern ICM_Data ICM_Data_Holder; //Holds data of the ICM readings
+// EXTERNAL GLOBAL VARIABLES
+extern spi_device_handle_t spi_MMC;
+extern SPI_DMA_Channel SPI_DMA_MMC;
 
+extern volatile bool dma_in_progress_MMC;
+extern volatile bool new_mag_data_ready;
+
+extern bool MMC_first_read;
+
+extern MMC_Data MMC_Data_Holder;
 
 // FUNCTION PROTOTYPES
-void IRAM_ATTR IMU_ISR_dataReady();
-void IRAM_ATTR IMU_ISR_DMAcomplete_callback(spi_transaction_t *trans);
+void IRAM_ATTR MMC_ISR_dataReady();
+void IRAM_ATTR MMC_ISR_DMAcomplete_callback(spi_transaction_t *trans);
 
-bool ICM_SPI_config();
-bool ICM_DMA_config();
-void ICM_write_reg(uint8_t reg, uint8_t data);
-uint8_t ICM_read_reg(uint8_t reg);
+void MMC_write_reg(uint8_t reg, uint8_t data);
+uint8_t MMC_read_reg(uint8_t reg);
 
-bool ICM_init_chip(uint8_t outputRate);
+bool MMC_init_chip(uint8_t outputRate = 2);
+bool MMC_single_read();
 
-//void ICM_calibration(int num_samples);
-bool ICM_single_read();
-//void ICM_factory_accel_calibration(int IMU_ID, int num_samples, volatile bool& interrupt);
+bool Calibrate_Full_Soft_Iron(uint8_t num_seconds = 3, uint8_t num_timeout = 30);
+void Apply_Cal_Matrix();
 
-void ICM_Kalman_fusion(float dt,int mode = 0);
-
-float moving_average(float *buffer, float new_val, int &ma_index);
-
-bool ICM_accel_calib(int num_samples);
-
-bool ICM_gyro_calib(int num_samples);
-
-#endif /* ICM42607_DRIVER_H */
+#endif /* MMC5983MA_DRIVER_H */

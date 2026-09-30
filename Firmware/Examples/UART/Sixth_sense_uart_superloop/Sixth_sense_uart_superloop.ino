@@ -1,4 +1,5 @@
 #include "ICM42607_Driver.h"
+#include "MMC5983MA_Driver.h"
 
 #define CONTROL_LOOP_FREQUENCY 200 //This is the frequency of the low level control loop and is actuated by back IMU interrupt as the master timer
 
@@ -11,12 +12,6 @@ void setup(void) {
       Serial.println("Beginning initialization process");
 
 
-      // Initialize SPI hardware
-      if (!ICM_SPI_config()) {
-            Serial.println("SPI init failed!");
-            return;
-      }
-
       // Initialize ICM with all relevant settings
       if (!ICM_init_chip(2)) {
             Serial.println("ICM initialization failed!");
@@ -25,17 +20,20 @@ void setup(void) {
       else{
             Serial.println("ICM initialization success!");
       }
-      
-      // Allocate DMA buffers and pre-arm descriptor
-      if (!ICM_DMA_config()) {
-            Serial.println("DMA buffer allocation failed!");
+
+      // Initialize ICM with all relevant settings
+      if (!MMC_init_chip(2)) {
+            Serial.println("MMC initialization failed!");
             return;
       }
       else{
-            Serial.println("DMA buffer allocation success!");
+            Serial.println("MMC initialization success!");
       }
+      
 
       pinMode(PIN_INT_ICM, INPUT);
+      attachInterrupt(digitalPinToInterrupt(PIN_INT_ICM), IMU_ISR_dataReady, RISING);
+      pinMode(PIN_INT_MAG, INPUT);
       attachInterrupt(digitalPinToInterrupt(PIN_INT_ICM), IMU_ISR_dataReady, RISING);
       Serial.println("Interrupt set for ICM42607");
       Serial.println("Calibrating accelerometer");

@@ -1,10 +1,8 @@
 /**
  * \file ICM42607_Driver.h
- * \brief Library for low level interfacing with the MPU6050. Use instead of arduino library if high speed application is needed.
- * TODO: 
+ * \brief Header file for driving the ICM42607 IMU
  *
  * \author Chase Sun
- * \bug
  */
 
 #ifndef ICM42607_DRIVER_H
@@ -16,6 +14,7 @@
 #include <Preferences.h> //Used for saving to SPI flash memory
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
+#include "Sixth_sense_SPI.h"
 
 
 // CONSTANTS/MACROS
@@ -23,27 +22,21 @@
 #define ICM_BURST_LEN 15
 #define Moving_average_windowSize 10
 
-// SPI device using SPI_HOST2
 extern spi_device_handle_t spi_ICM;
+extern SPI_DMA_Channel SPI_DMA_ICM;
 
-// DMA buffers for read and write sequences to be assigned to internal memory
-extern uint8_t *dma_tx_ICM;
-extern uint8_t *dma_rx_ICM;
-
-// Persistent transaction descriptor for async DMA
-extern spi_transaction_t dma_trans_ICM;
-extern volatile bool dma_in_progress;
-extern volatile bool new_data_ready;
+extern volatile bool dma_in_progress_ICM;
+extern volatile bool new_data_ready_ICM;
 
 extern bool IMU_first_read;
 
 
 //SPI Pins
-#define PIN_INT_ICM 7   // IMU Data Ready Interrupt
-#define PIN_MISO    8   // Sensor SDO
-#define PIN_MOSI    9   // Sensor SDI
-#define PIN_SCLK    10  // SCLK
-#define PIN_CS      11  // CS
+#define PIN_INT_ICM     7   // IMU Data Ready Interrupt
+#define PIN_MISO_ICM    8   // Sensor SDO
+#define PIN_MOSI_ICM    9   // Sensor SDI
+#define PIN_SCLK_ICM    10  // SCLK
+#define PIN_CS_ICM      11  // CS
 
 // ICM 42607 registers
 #define WHO_AM_I_ICM        0x75
@@ -101,12 +94,10 @@ extern ICM_Data ICM_Data_Holder; //Holds data of the ICM readings
 void IRAM_ATTR IMU_ISR_dataReady();
 void IRAM_ATTR IMU_ISR_DMAcomplete_callback(spi_transaction_t *trans);
 
-bool ICM_SPI_config();
-bool ICM_DMA_config();
 void ICM_write_reg(uint8_t reg, uint8_t data);
 uint8_t ICM_read_reg(uint8_t reg);
 
-bool ICM_init_chip(uint8_t outputRate);
+bool ICM_init_chip(uint8_t outputRate = 2);
 
 //void ICM_calibration(int num_samples);
 bool ICM_single_read();
@@ -116,8 +107,8 @@ void ICM_Kalman_fusion(float dt,int mode = 0);
 
 float moving_average(float *buffer, float new_val, int &ma_index);
 
-bool ICM_accel_calib(int num_samples);
+bool ICM_accel_calib(int num_samples = 200);
 
-bool ICM_gyro_calib(int num_samples);
+bool ICM_gyro_calib(int num_samples = 200);
 
 #endif /* ICM42607_DRIVER_H */
