@@ -79,6 +79,8 @@ extern volatile bool new_data_ready_MMC;
 extern bool MMC_first_read;
 
 extern MMC_Data_t MMC_Data_Holder;
+extern bool using_RTOS; //Boolean to determine if RTOS is used. 0 represents superloop and 1 represents RTOS operation
+
 
 // FUNCTION PROTOTYPES
 void IRAM_ATTR MMC_ISR_dataReady();

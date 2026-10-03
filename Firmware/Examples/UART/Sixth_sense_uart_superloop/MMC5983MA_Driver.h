@@ -49,7 +49,7 @@
 #define MMC_SPI_ADDR_MASK 0x3F // Bits 2-7 contain the 6-bit address
 
 // STRUCTURES
-struct MMC_Data {
+struct MMC_Data_t {
       // Field readings in Gauss
       float mx;
       float my;
@@ -71,15 +71,17 @@ struct MMC_Data {
 };
 
 // EXTERNAL GLOBAL VARIABLES
-extern spi_device_handle_t spi_MMC;
 extern SPI_DMA_Channel SPI_DMA_MMC;
 
 extern volatile bool dma_in_progress_MMC;
-extern volatile bool new_mag_data_ready;
+extern volatile bool new_data_ready_MMC;
 
 extern bool MMC_first_read;
 
-extern MMC_Data MMC_Data_Holder;
+extern MMC_Data_t MMC_Data_Holder;
+extern bool using_RTOS; //Boolean to determine if RTOS is used. 0 represents superloop and 1 represents RTOS operation
+extern TaskHandle_t SensorTaskHandle;
+
 
 // FUNCTION PROTOTYPES
 void IRAM_ATTR MMC_ISR_dataReady();
@@ -88,10 +90,10 @@ void IRAM_ATTR MMC_ISR_DMAcomplete_callback(spi_transaction_t *trans);
 void MMC_write_reg(uint8_t reg, uint8_t data);
 uint8_t MMC_read_reg(uint8_t reg);
 
-bool MMC_init_chip(uint8_t outputRate = 2);
+bool MMC_init_chip(uint8_t outputRate = 6);
 bool MMC_single_read();
 
-bool Calibrate_Full_Soft_Iron(uint8_t num_seconds = 3, uint8_t num_timeout = 30);
+bool Calibrate_Full_Soft_Iron(uint8_t num_seconds = 6, uint8_t num_timeout = 30);
 void Apply_Cal_Matrix();
 
 #endif /* MMC5983MA_DRIVER_H */

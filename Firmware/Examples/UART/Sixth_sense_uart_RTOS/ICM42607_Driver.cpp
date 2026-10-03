@@ -21,6 +21,9 @@ bool IMU_first_read = false;
 //Data holding structure
 ICM_Data_t ICM_Data_Holder = {};
 
+//Temporary boolean for RTOS vs superloop mode
+bool using_RTOS = false;
+
 //RTOS Task handle
 extern TaskHandle_t SensorTaskHandle; //Define this task handle where the sensor data is processed
 
@@ -39,18 +42,22 @@ void IRAM_ATTR IMU_ISR_dataReady() {
 }
 
 //Call back function when DMA completes transfer and for triggering data processing & communication
-void IRAM_ATTR IMU_ISR_DMAcomplete_callback(spi_transaction_t *trans) {
+//RTOS version where an external sensor task handle is notified
+void IRAM_ATTR IMU_ISR_DMAcomplete_callback_RTOS(spi_transaction_t *trans) {
       new_data_ready_ICM = true; // Raise flag for buffer full
-      
-      // Wake up the RTOS task
-      BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-      if (SensorTaskHandle != NULL) {
-          vTaskNotifyGiveFromISR(SensorTaskHandle, &xHigherPriorityTaskWoken);//This function checks if sensor task has higher priority than current task during isr firing
-          //If that is the case (should be in almost all cases as the sensor task is very high priority), the function will set the boolean to pdTrue
-          //Then, the ISR will exit and the sensor reading task is immediately executed before the current task is finished executing.
-          portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+      if (using_RTOS){
+            // Wake up the RTOS task
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            if (SensorTaskHandle != NULL) {
+                  vTaskNotifyGiveFromISR(SensorTaskHandle, &xHigherPriorityTaskWoken);//This function checks if sensor task has higher priority than current task during isr firing
+                  //If that is the case (should be in almost all cases as the sensor task is very high priority), the function will set the boolean to pdTrue
+                  //Then, the ISR will exit and the sensor reading task is immediately executed before the current task is finished executing.
+                  portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+            }
       }
 }
+      
+
 
 
 /**

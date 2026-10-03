@@ -11,36 +11,59 @@
 
 // Initialze the global variables declared in the header
 //Variables used for SPI communication
-spi_device_handle_t spi_ICM = NULL;
 SPI_DMA_Channel SPI_DMA_ICM = {};
 
 //Flags for data ready
-volatile bool dma_in_progress = false;
+volatile bool dma_in_progress_ICM = false;
 volatile bool new_data_ready_ICM = false;
 bool IMU_first_read = false;
 
 //Data holding structure
-ICM_Data ICM_Data_Holder = {};
+ICM_Data_t ICM_Data_Holder = {};
 
+
+
+//RTOS Task handle
+extern TaskHandle_t SensorTaskHandle; //Define this task handle where the sensor data is processed
 
 // FUNCTIONS
 
 //First two functions are a pair of quick ISR functions for data ready & DMA complete
 
 //ISR for data ready interrupt from chip
-void IRAM_ATTR IMU_ISR_dataReady() {
-      if (!dma_in_progress) {
+void IRAM_ATTR ICM_ISR_dataReady() {
+      if (!dma_in_progress_ICM) {
             // Queue the pre-armed DMA transaction with zero tick delay
-            if (spi_device_queue_trans(spi_ICM, &SPI_DMA_ICM.trans, 0) == ESP_OK) {
-                  dma_in_progress = true;
+            if (spi_device_queue_trans(SPI_DMA_ICM.handle, &SPI_DMA_ICM.trans, 0) == ESP_OK) {
+                  dma_in_progress_ICM = true;
+            }
+      }
+
+      //Triggers MMC read
+      if (!dma_in_progress_MMC) {
+            if (spi_device_queue_trans(SPI_DMA_MMC.handle, &SPI_DMA_MMC.trans, 0) == ESP_OK) {
+                  dma_in_progress_MMC = true;
+            }
+      }
+
+}
+
+//Call back function when DMA completes transfer and for triggering data processing & communication
+//RTOS version where an external sensor task handle is notified
+void IRAM_ATTR ICM_ISR_DMAcomplete_callback(spi_transaction_t *trans) {
+      new_data_ready_ICM = true; // Raise flag for buffer full
+      if (using_RTOS){
+            // Wake up the RTOS task
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            if (SensorTaskHandle != NULL) {
+                  vTaskNotifyGiveFromISR(SensorTaskHandle, &xHigherPriorityTaskWoken);//This function checks if sensor task has higher priority than current task during isr firing
+                  //If that is the case (should be in almost all cases as the sensor task is very high priority), the function will set the boolean to pdTrue
+                  //Then, the ISR will exit and the sensor reading task is immediately executed before the current task is finished executing.
+                  portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
             }
       }
 }
-
-//ISR for DMA SPI Transaction complete
-void IRAM_ATTR IMU_ISR_DMAcomplete_callback(spi_transaction_t *trans) {
-      new_data_ready_ICM = true; //Raise flag for buffer full
-}
+      
 
 
 
@@ -57,7 +80,7 @@ void ICM_write_reg(uint8_t reg, uint8_t data) {
     t.length = 16; //Two bytes
     t.tx_data[0] = reg;
     t.tx_data[1] = data;
-    spi_device_polling_transmit(spi_ICM, &t);
+    spi_device_polling_transmit(SPI_DMA_ICM.handle, &t);
 }
 
 
@@ -73,7 +96,7 @@ uint8_t ICM_read_reg(uint8_t reg) {
     t.length = 16;
     t.tx_data[0] = reg | SPI_READ_FLAG;
     t.tx_data[1] = 0x00; //send 0s so the read is valid
-    spi_device_polling_transmit(spi_ICM, &t);
+    spi_device_polling_transmit(SPI_DMA_ICM.handle, &t);
     return t.rx_data[1];
 }
 
@@ -97,19 +120,19 @@ bool ICM_init_chip(uint8_t outputRate) {
 
       // Initialize the SPI bus
       if (!SPI_Bus_Init(PIN_MOSI_ICM, PIN_MISO_ICM, PIN_SCLK_ICM)) {
-            Serial.println("SPI host initialization failed!");
+            Serial.println("[ICM-ERROR] SPI host initialization failed!");
             return 0;
       }
 
       // Add the specific SPI device
-      if (!SPI_Add_Device(PIN_CS_ICM, IMU_ISR_DMAcomplete_callback, SPI_DMA_ICM.handle)) {
-            Serial.println("Could not add ICM Device!");
+      if (!SPI_Add_Device(PIN_CS_ICM, ICM_ISR_DMAcomplete_callback, SPI_DMA_ICM.handle)) {
+            Serial.println("[ICM-ERROR] Could not add ICM Device!");
             return 0;
       }
 
       // Initialize the SPI bus
       if (!SPI_Arm_DMA_Channel(ICM_BURST_LEN, (DATA_START_ICM  | SPI_READ_FLAG), SPI_DMA_ICM)) {
-            Serial.println("DMA setup for ICM failed!");
+            Serial.println("[ICM-ERROR] DMA setup for ICM failed!");
             return 0;
       }
 
@@ -160,7 +183,7 @@ bool ICM_init_chip(uint8_t outputRate) {
             ICM_Data_Holder.frequency = 100;
       }
       else{
-            Serial.println("Report frequency can be only (5) 1600 / (4) 800 / (3) 400 / (2) 200 / (1) 100 hz.");
+            Serial.println("[ICM-ERROR] Report frequency can be only (5) 1600 / (4) 800 / (3) 400 / (2) 200 / (1) 100 hz.");
             return false;
       }
 
@@ -182,11 +205,11 @@ bool ICM_init_chip(uint8_t outputRate) {
       //Check if we are communicating with the right chip
       uint8_t check_addr = ICM_read_reg(WHO_AM_I_ICM);
       if (check_addr != 0x60){
-            Serial.printf("Wrong address on ICM! Address found to be %x, address we are looking for is 0x60\n", check_addr);
+            Serial.printf("[ICM-ERROR] Wrong address on ICM! Address found to be %x, address we are looking for is 0x60\n", check_addr);
             return false; //Checking who am I failed, IMU not initialized
       }
       else{
-            Serial.printf("Correct address on ICM, found to be %x.\n",check_addr);
+            Serial.printf("[ICM] Correct address on ICM, found to be %x.\n",check_addr);
       }
 
       //Last step: set the kalman filter parameters (defaults used)
@@ -210,15 +233,13 @@ bool ICM_init_chip(uint8_t outputRate) {
 
       spi_transaction_t *r_trans;
 
-      if (spi_device_get_trans_result(spi_ICM, &r_trans, 0) != ESP_OK) {
-            
+      if (spi_device_get_trans_result(SPI_DMA_ICM.handle, &r_trans, 0) != ESP_OK) {
+            return false;
       }
 
-      dma_in_progress = false;
+      dma_in_progress_ICM = false;
       
-
       // Make the read
-
 
       // Unpack raw 16-bit values
       int16_t temp_raw = (int16_t)((SPI_DMA_ICM.rx_buffer[1]  << 8) | SPI_DMA_ICM.rx_buffer[2]);
@@ -381,9 +402,9 @@ bool ICM_accel_calib(int num_samples){
       ICM_Data_Holder.ay_offset = ay_avg/((float)sample_count);
       ICM_Data_Holder.az_offset = ax_avg/((float)sample_count);//Subtracting the gravity vector
 
-      Serial.printf("IMU accel offsets: x: %.4f, y: %.4f, z: %.4f\n", ICM_Data_Holder.ax_offset,ICM_Data_Holder.ay_offset,ICM_Data_Holder.az_offset);    
+      Serial.printf("[ICM] IMU accel offsets: x: %.4f, y: %.4f, z: %.4f\n", ICM_Data_Holder.ax_offset,ICM_Data_Holder.ay_offset,ICM_Data_Holder.az_offset);    
 
-      Serial.println("Accel calibration complete!");
+      Serial.println("[ICM] Accel calibration complete!");
 
       return 1;
 
@@ -423,9 +444,9 @@ bool ICM_gyro_calib(int num_samples){
       ICM_Data_Holder.gy_offset = gy_avg/((float)sample_count);
       ICM_Data_Holder.gz_offset = gx_avg/((float)sample_count);//Subtracting the gravity vector
 
-      Serial.printf("IMU gyro offsets: x: %.4f, y: %.4f, z: %.4f\n", ICM_Data_Holder.gx_offset,ICM_Data_Holder.gy_offset,ICM_Data_Holder.gz_offset);    
+      Serial.printf("[ICM] gyro offsets: x: %.4f, y: %.4f, z: %.4f\n", ICM_Data_Holder.gx_offset,ICM_Data_Holder.gy_offset,ICM_Data_Holder.gz_offset);    
 
-      Serial.println("Gyro calibration complete!");
+      Serial.println("[ICM] Gyro calibration complete!");
 
       return 1;
 

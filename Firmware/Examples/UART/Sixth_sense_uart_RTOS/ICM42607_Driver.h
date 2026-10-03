@@ -87,6 +87,7 @@ struct ICM_Data_t {
 };
 
 extern ICM_Data_t ICM_Data_Holder; //Holds data of the ICM readings
+extern bool using_RTOS; //Boolean to determine if RTOS is used. 0 represents superloop and 1 represents RTOS operation
 
 
 // FUNCTION PROTOTYPES

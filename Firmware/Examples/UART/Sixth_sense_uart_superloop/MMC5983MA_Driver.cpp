@@ -9,39 +9,44 @@
 
 // Initialze the global variables declared in the header
 //Variables used for SPI communication
-spi_device_handle_t spi_MMC = NULL;
 SPI_DMA_Channel SPI_DMA_MMC = {};
 
 //Flags for data ready
 volatile bool dma_in_progress_MMC = false;
-volatile bool new_mag_data_ready = false;
+volatile bool new_data_ready_MMC = false;
 extern bool MMC_first_read;
 
 //Data holding structure
-MMC_Data MMC_Data_Holder = {};
-
+MMC_Data_t MMC_Data_Holder = {};
 //Initialize hardiron offset as zeros and soft iron matrix as I
-MMC_Data_Holder.offset = {0.0,0.0,0.0};
-MMC_Data_Holder.W = {
-                        {1.0, 0.0, 0.0},
-                        {0.0, 1.0, 0.0},
-                        {0.0, 0.0, 1.0}
-                    }
+
+//FUNCTIONS
 
 // ISR for data ready interrupt from the magnetometer
+// NOTE: Currently the MMC's interrupt is disabled due to timing issues, and this function is instead executed through the ICM's hardware interrupt to unify sampling frequency
 void IRAM_ATTR MMC_ISR_dataReady() {
       if (!dma_in_progress_MMC) {
-            if (spi_device_queue_trans(spi_MMC, &SPI_DMA_MMC.trans, 0) == ESP_OK) {
+            if (spi_device_queue_trans(SPI_DMA_MMC.handle, &SPI_DMA_MMC.trans, 0) == ESP_OK) {
                   dma_in_progress_MMC = true;
             }
       }
 }
 
 // ISR for DMA SPI Transaction complete
+//Call back function when DMA completes transfer and for triggering data processing & communication
 void IRAM_ATTR MMC_ISR_DMAcomplete_callback(spi_transaction_t *trans) {
-      new_mag_data_ready = true;
+      new_data_ready_MMC = true; // Raise flag for buffer full
+      if (using_RTOS){
+            // Wake up the RTOS task
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            if (SensorTaskHandle != NULL) {
+                  vTaskNotifyGiveFromISR(SensorTaskHandle, &xHigherPriorityTaskWoken);//This function checks if sensor task has higher priority than current task during isr firing
+                  //If that is the case (should be in almost all cases as the sensor task is very high priority), the function will set the boolean to pdTrue
+                  //Then, the ISR will exit and the sensor reading task is immediately executed before the current task is finished executing.
+                  portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+            }
+      }
 }
-
 
 /**
  * \brief Write to an MMC5983MA register. The command byte consists of a Write bit (0) and a 6-bit address.
@@ -50,9 +55,9 @@ void MMC_write_reg(uint8_t reg, uint8_t data) {
       spi_transaction_t t = {};
       t.flags = SPI_TRANS_USE_TXDATA;
       t.length = 16; 
-      t.tx_data[0] = reg & MMC_SPI_ADDR_MASK; // Bit 7 is 0 for write
+      t.tx_data[0] = (0x00 | (reg & MMC_SPI_ADDR_MASK)); // Bit 7 is 0 for write, bit 6 is wiped due to only having 6 bit addresses (5-0)
       t.tx_data[1] = data;
-      spi_device_polling_transmit(spi_MMC, &t);
+      spi_device_polling_transmit(SPI_DMA_MMC.handle, &t);
 }
 
 /**
@@ -62,9 +67,9 @@ uint8_t MMC_read_reg(uint8_t reg) {
       spi_transaction_t t = {};
       t.flags = SPI_TRANS_USE_TXDATA | SPI_TRANS_USE_RXDATA;
       t.length = 16;
-      t.tx_data[0] = (reg & MMC_SPI_ADDR_MASK) | MMC_SPI_READ_FLAG; 
+      t.tx_data[0] =  (MMC_SPI_READ_FLAG | (reg & MMC_SPI_ADDR_MASK)); // Bit 7 is 1 for read, bit 6 is wiped due to only having 6 bit addresses (5-0)
       t.tx_data[1] = 0x00; 
-      spi_device_polling_transmit(spi_MMC, &t);
+      spi_device_polling_transmit(SPI_DMA_MMC.handle, &t);
       return t.rx_data[1];
 }
 
@@ -78,23 +83,21 @@ bool MMC_init_chip(uint8_t outputRate) {
       //Zero out the data holder
       MMC_Data_Holder = {};
 
-      //First setup the SPI bus
-
       // Initialize the SPI bus
       if (!SPI_Bus_Init(PIN_MOSI_MMC, PIN_MISO_MMC, PIN_SCLK_MMC)) {
-            Serial.println("SPI host initialization failed!");
+            Serial.println("[MMC-ERROR] SPI host initialization failed!");
             return 0;
       }
 
       // Add the specific SPI device
       if (!SPI_Add_Device(PIN_CS_MMC, MMC_ISR_DMAcomplete_callback, SPI_DMA_MMC.handle)) {
-            Serial.println("Could not add MMC Device!");
+            Serial.println("[MMC-ERROR] Could not add MMC Device!");
             return 0;
       }
 
       // Initialize the SPI bus
       if (!SPI_Arm_DMA_Channel(MMC_BURST_LEN, ((MMC_XOUT0 & MMC_SPI_ADDR_MASK) | MMC_SPI_READ_FLAG), SPI_DMA_MMC)) {
-            Serial.println("DMA setup for MMC failed!");
+            Serial.println("[MMC-ERROR] DMA setup for MMC failed!");
             return 0;
       }
 
@@ -102,10 +105,10 @@ bool MMC_init_chip(uint8_t outputRate) {
       MMC_write_reg(MMC_CTRL1, 0x80); // SW_RST bit
       delay(15);                      // Wait 10-15 ms for power-on/OTP reload cycle
 
-      // 2. Verify Product ID (must read 0x30 / 48 dec)
+      // 2. Verify Product ID (must read 0x30 / 0d48)
       uint8_t prod_id = MMC_read_reg(MMC_PROD_ID);
       if (prod_id != 0x30) {
-            Serial.printf("[MMC ERROR] Invalid Product ID: 0x%02X (Expected 0x30)\n", prod_id);
+            Serial.printf("[MMC-ERROR] Invalid Product ID: 0x%02X (Expected 0x30)\n", prod_id);
             return false;
       }
       Serial.printf("[MMC] Valid Product ID found: 0x%02X\n", prod_id);
@@ -120,9 +123,9 @@ bool MMC_init_chip(uint8_t outputRate) {
 
       // Base flags for Control Register 2:
       // Bit 7: En_prd_set = 1 (enables automatic periodic SET to maintain polarization)
-      // Bits 6:4: Prd_set = 001 (SET executed every 25 measurements)
+      // Bits 6:4: Prd_set = 111 (SET executed every 2000 measurements)
       // Bit 3: Cmm_en = 1 (Continuous Measurement Mode Enabled)
-      const uint8_t CTRL2_BASE = 0x98; // 0b10011000
+      const uint8_t CTRL2_BASE = 0xF8; // 0b11111000
 
       switch (outputRate) {
             case 7:
@@ -175,7 +178,7 @@ bool MMC_init_chip(uint8_t outputRate) {
                   break;
 
             default:
-                  Serial.println("[MMC ERROR] Unsupported rate! Use 7 (1000 Hz), 6 (200 Hz), 5 (100 Hz), 4 (50 Hz), 3 (20 Hz), 2 (10 Hz), or 1 (1 Hz).");
+                  Serial.println("[MMC-ERROR] Unsupported rate! Use 7 (1000 Hz), 6 (200 Hz), 5 (100 Hz), 4 (50 Hz), 3 (20 Hz), 2 (10 Hz), or 1 (1 Hz).");
                   return false;
       }
 
@@ -191,17 +194,19 @@ bool MMC_init_chip(uint8_t outputRate) {
 
       Serial.printf("[MMC] Configured for continuous mode at %d Hz.\n", MMC_Data_Holder.reportFrequency);
       return true;
+
 }
 
 /**
  * \brief Unpacks the DMA buffer and applies 16-bit conversions per MMC5983MA_RevA_4-3-19.pdf.
  */
 bool MMC_single_read() {
+      //First clear the interrupt
       
       spi_transaction_t *r_trans;
     
       // Check if DMA transfer completed
-      if (spi_device_get_trans_result(spi_MMC, &r_trans, 0) != ESP_OK) {
+      if (spi_device_get_trans_result(SPI_DMA_MMC.handle, &r_trans, 0) != ESP_OK) {
             return false;
       }
 
@@ -221,13 +226,14 @@ bool MMC_single_read() {
       y_18 |= (extra_bits >> 4) & 0x03;
       z_18 |= (extra_bits >> 2) & 0x03;
 
-      MMC_write_reg(MMC_STATUS, 0x01);
 
       // 4. Calculations to convert raw 18-bit values to Gauss. The datasheet specifies that the null field value (131072) should be subtracted from the raw value, and then divided by the counts per Gauss (16384) to get the field in Gauss.
       
       MMC_Data_Holder.mx = ((float)x_18 - NULL_FIELD_18) / COUNTS_PER_G_18;
       MMC_Data_Holder.my = ((float)y_18 - NULL_FIELD_18) / COUNTS_PER_G_18;
       MMC_Data_Holder.mz = ((float)z_18 - NULL_FIELD_18) / COUNTS_PER_G_18;
+
+      Apply_Cal_Matrix();//Calibrate the results
 
       return true;
 }
@@ -341,28 +347,27 @@ static bool MatrixSqrt3x3(const float M[3][3], float W[3][3]) {
 static size_t MMC_Read_Block(uint8_t block_seconds, 
                              std::vector<float>& x_out, 
                              std::vector<float>& y_out, 
-                             std::vector<float>& z_out) 
-{
-    if (MMC_Data_Holder.reportFrequency <= 0) return 0;
+                             std::vector<float>& z_out) {
 
-    size_t target_samples = (size_t)block_seconds * MMC_Data_Holder.reportFrequency;
-    size_t samples_read = 0;
-    uint32_t start_ms = millis();
-    uint32_t timeout_ms = (uint32_t)block_seconds * 1000 + 500; // Extra margin
+      if (MMC_Data_Holder.reportFrequency <= 0) return 0;
 
-    while (samples_read < target_samples && (millis() - start_ms < timeout_ms)) {
-        if (new_mag_data_ready) {
-            new_mag_data_ready = false;
-            if (MMC_single_read()) {
-                x_out.push_back(MMC_Data_Holder.mx);
-                y_out.push_back(MMC_Data_Holder.my);
-                z_out.push_back(MMC_Data_Holder.mz);
-                samples_read++;
+      size_t target_samples = (size_t)block_seconds * MMC_Data_Holder.reportFrequency;
+      size_t samples_read = 0;
+      uint32_t timeout_ms = (uint32_t)block_seconds * 1000 + 500; // Extra margin
+
+      while (samples_read < target_samples) {
+            if (new_data_ready_MMC) {
+                  new_data_ready_MMC = false;
+                  if (MMC_single_read()) {
+                        x_out.push_back(MMC_Data_Holder.mx);
+                        y_out.push_back(MMC_Data_Holder.my);
+                        z_out.push_back(MMC_Data_Holder.mz);
+                        samples_read++;
+                  }
             }
-        }
-        vTaskDelay(pdMS_TO_TICKS(1)); // Yield CPU to watchdog / background tasks
-    }
-    return samples_read;
+            //vTaskDelay(pdMS_TO_TICKS(1)); // Yield CPU to watchdog / background tasks
+      }
+      return samples_read;
 }
 
 /**
@@ -397,7 +402,7 @@ static bool Evaluate_Calibration_Quality(const std::vector<float>& raw_x,
       if ((max_x - min_x) < MIN_AXIS_RANGE ||
             (max_y - min_y) < MIN_AXIS_RANGE ||
             (max_z - min_z) < MIN_AXIS_RANGE) {
-            Serial.println("[CAL] Insufficient spatial distribution; rotate across all 3 axes.");
+            Serial.println("[MMC] Insufficient spatial distribution; rotate across all 3 axes.");
             return false;
       }
 
@@ -430,7 +435,7 @@ static bool Evaluate_Calibration_Quality(const std::vector<float>& raw_x,
       float std_r = sqrtf(var_sum / (float)n);
       float norm_error = std_r / mean_r;
 
-      Serial.printf("[CAL] Fit Mean Radius: %.4f G, Relative Error: %.2f%%\n", mean_r, norm_error * 100.0f);
+      Serial.printf("[MMC] Fit Mean Radius: %.4f G, Relative Error: %.2f%%\n", mean_r, norm_error * 100.0f);
 
       // Good fit condition: standard deviation of calibrated field is within 10%
       return (norm_error < 0.10f);
@@ -439,11 +444,22 @@ static bool Evaluate_Calibration_Quality(const std::vector<float>& raw_x,
 /**
  * \brief Reads blocks of magnetometer data, computes calibration, assesses quality,
  *        and repeats until a good fit is found or timeout is reached.
- * \param num_seconds  Block sampling duration in seconds. Default = 3s
+ * \param num_seconds  Block sampling duration in seconds. Default = 6s
  * \param num_timeout  Maximum cumulative time to attempt calibration. Default = 30s
  * \return true on successful quality calibration, false on timeout.
  */
 bool Calibrate_Full_Soft_Iron(uint8_t num_seconds, uint8_t num_timeout) {
+
+      //Reset the calibration values 
+      MMC_Data_Holder.offset[0] = 0.0f;
+      MMC_Data_Holder.offset[1] = 0.0f;
+      MMC_Data_Holder.offset[2] = 0.0f;
+
+      // For W (identity matrix):
+      MMC_Data_Holder.W[0][0] = 1.0f; MMC_Data_Holder.W[0][1] = 0.0f; MMC_Data_Holder.W[0][2] = 0.0f;
+      MMC_Data_Holder.W[1][0] = 0.0f; MMC_Data_Holder.W[1][1] = 1.0f; MMC_Data_Holder.W[1][2] = 0.0f;
+      MMC_Data_Holder.W[2][0] = 0.0f; MMC_Data_Holder.W[2][1] = 0.0f; MMC_Data_Holder.W[2][2] = 1.0f;
+
       if (num_seconds == 0) num_seconds = 3;
       if (num_timeout < num_seconds) num_timeout = num_seconds;
 
@@ -455,10 +471,10 @@ bool Calibrate_Full_Soft_Iron(uint8_t num_seconds, uint8_t num_timeout) {
       uint32_t timeout_ms = (uint32_t)num_timeout * 1000;
       bool is_good_calibration = false;
 
-      Serial.printf("[CAL] Beginning calibration: %ds blocks, timeout %ds...\n", num_seconds, num_timeout);
+      Serial.printf("[MMC] Beginning calibration: %ds blocks, timeout %ds...\n", num_seconds, num_timeout);
 
       while ((millis() - start_time) < timeout_ms) {
-            Serial.printf("[CAL] Sampling %d second block...\n", num_seconds);
+            Serial.printf("[MMC] Sampling %d second block...\n", num_seconds);
             MMC_Read_Block(num_seconds, all_x, all_y, all_z);
 
             size_t total_samples = all_x.size();
@@ -498,7 +514,7 @@ bool Calibrate_Full_Soft_Iron(uint8_t num_seconds, uint8_t num_timeout) {
             // 2. Solve linear system
             float p[9];
             if (!Solve9x9(AtA, Atb, p)) {
-                  Serial.println("[CAL] Matrix solve failed (singular). Continuing sampling...");
+                  Serial.println("[MMC] Matrix solve failed (singular). Continuing sampling...");
                   continue;
             }
 
@@ -512,7 +528,7 @@ bool Calibrate_Full_Soft_Iron(uint8_t num_seconds, uint8_t num_timeout) {
             // 3. Compute centroid & soft iron matrix
             float invA[3][3];
             if (!Invert3x3(A_mat, invA)) {
-                  Serial.println("[CAL] Invert3x3 failed. Continuing sampling...");
+                  Serial.println("[MMC] Invert3x3 failed. Continuing sampling...");
                   continue;
             }
 
@@ -529,7 +545,7 @@ bool Calibrate_Full_Soft_Iron(uint8_t num_seconds, uint8_t num_timeout) {
 
             float d_scale = 1.0f + (cand_offset[0]*Av[0] + cand_offset[1]*Av[1] + cand_offset[2]*Av[2]);
             if (d_scale <= 0.0f) {
-                  Serial.println("[CAL] Degenerate ellipsoid (d_scale <= 0). Continuing sampling...");
+                  Serial.println("[MMC] Degenerate ellipsoid (d_scale <= 0). Continuing sampling...");
                   continue;
             }
 
@@ -542,7 +558,7 @@ bool Calibrate_Full_Soft_Iron(uint8_t num_seconds, uint8_t num_timeout) {
 
             float cand_W[3][3];
             if (!MatrixSqrt3x3(M, cand_W)) {
-                  Serial.println("[CAL] MatrixSqrt3x3 failed. Continuing sampling...");
+                  Serial.println("[MMC] MatrixSqrt3x3 failed. Continuing sampling...");
                   continue;
             }
 
@@ -551,15 +567,15 @@ bool Calibrate_Full_Soft_Iron(uint8_t num_seconds, uint8_t num_timeout) {
                   memcpy(MMC_Data_Holder.offset, cand_offset, sizeof(cand_offset));
                   memcpy(MMC_Data_Holder.W, cand_W, sizeof(cand_W));
                   is_good_calibration = true;
-                  Serial.printf("[CAL] Calibration converged successfully with %u samples!\n", (unsigned)total_samples);
+                  Serial.printf("[MMC] Calibration converged successfully with %u samples!\n", (unsigned)total_samples);
                   break;
             }
 
-            Serial.println("[CAL] Fit quality not yet met. Accumulating more data...");
+            Serial.println("[MMC] Fit quality not yet met. Accumulating more data...");
       }
 
       if (!is_good_calibration) {
-            Serial.println("[CAL ERROR] Calibration timed out without reaching target quality.");
+            Serial.println("[MMC-ERROR] Calibration timed out without reaching target quality.");
       }
 
       return is_good_calibration;
@@ -575,12 +591,12 @@ bool Calibrate_Full_Soft_Iron(uint8_t num_seconds, uint8_t num_timeout) {
  */
 void Apply_Cal_Matrix() {
       // 1. Subtract hard-iron centroid offset
-      float dx = in_x - MMC_Data_Holder.offset[0];
-      float dy = in_y - MMC_Data_Holder.offset[1];
-      float dz = in_z - MMC_Data_Holder.offset[2];
+      float dx = MMC_Data_Holder.mx - MMC_Data_Holder.offset[0];
+      float dy = MMC_Data_Holder.my - MMC_Data_Holder.offset[1];
+      float dz = MMC_Data_Holder.mz - MMC_Data_Holder.offset[2];
 
       // 2. Multiply by soft-iron correction tensor W
-      out_x = MMC_Data_Holder.W[0][0] * dx + MMC_Data_Holder.W[0][1] * dy + MMC_Data_Holder.W[0][2] * dz;
-      out_y = MMC_Data_Holder.W[1][0] * dx + MMC_Data_Holder.W[1][1] * dy + MMC_Data_Holder.W[1][2] * dz;
-      out_z = MMC_Data_Holder.W[2][0] * dx + MMC_Data_Holder.W[2][1] * dy + MMC_Data_Holder.W[2][2] * dz;
+      MMC_Data_Holder.mx_cal = MMC_Data_Holder.W[0][0] * dx + MMC_Data_Holder.W[0][1] * dy + MMC_Data_Holder.W[0][2] * dz;
+      MMC_Data_Holder.my_cal = MMC_Data_Holder.W[1][0] * dx + MMC_Data_Holder.W[1][1] * dy + MMC_Data_Holder.W[1][2] * dz;
+      MMC_Data_Holder.mz_cal = MMC_Data_Holder.W[2][0] * dx + MMC_Data_Holder.W[2][1] * dy + MMC_Data_Holder.W[2][2] * dz;
 }

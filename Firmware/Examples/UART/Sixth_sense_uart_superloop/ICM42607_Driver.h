@@ -16,13 +16,14 @@
 #include "esp_heap_caps.h"
 #include "Sixth_sense_SPI.h"
 
+#include "MMC5983MA_Driver.h" //This is done to allow the ICM's interrupt to drive the MMC's interrupt to unify sampling frequency
+
 
 // CONSTANTS/MACROS
 // Read length: 1 byte address header (Echo when writing register) + 14 payload bytes (2 temp, 3 accel, 3 gyro) = 15 bytes total
 #define ICM_BURST_LEN 15
 #define Moving_average_windowSize 10
 
-extern spi_device_handle_t spi_ICM;
 extern SPI_DMA_Channel SPI_DMA_ICM;
 
 extern volatile bool dma_in_progress_ICM;
@@ -58,41 +59,42 @@ extern bool IMU_first_read;
 
 // CLASSES
 
-struct ICM_Data {
+struct ICM_Data_t {
 
-    int frequency; //Data rate setting for ICM
+      int frequency; //Data rate setting for ICM
 
-    float temp; //Temp of sensor for corrections
+      float temp; //Temp of sensor for corrections
 
-    float ax; // Acceleration X
-    float ay; // Acceleration Y
-    float az; // Acceleration Z
-    float ax_offset; //Gyro x calibrated offset. These offsets are constant and are found through the factory calibration function and set manually
-    float ay_offset; //Gyro y calibrated offset
-    float az_offset; //Gyro z calibrated offset
+      float ax; // Acceleration X
+      float ay; // Acceleration Y
+      float az; // Acceleration Z
+      float ax_offset; //Gyro x calibrated offset. These offsets are constant and are found through the factory calibration function and set manually
+      float ay_offset; //Gyro y calibrated offset
+      float az_offset; //Gyro z calibrated offset
 
-    float gx; // Gyro X
-    float gy; // Gyro Y
-    float gz; // Gyro Z
-    float gx_offset; //Gyro x calibrated offset
-    float gy_offset; //Gyro y calibrated offset
-    float gz_offset; //Gyro z calibrated offset
+      float gx; // Gyro X
+      float gy; // Gyro Y
+      float gz; // Gyro Z
+      float gx_offset; //Gyro x calibrated offset
+      float gy_offset; //Gyro y calibrated offset
+      float gz_offset; //Gyro z calibrated offset
 
-    Kalman kalmanRoll;//Roll kalman object
-    Kalman kalmanPitch;//Pitch kalman object
-    Kalman kalmanYaw; //Yaw kalman object
-    float roll; //Euler angles
-    float pitch;
-    float yaw;
+      Kalman kalmanRoll;//Roll kalman object
+      Kalman kalmanPitch;//Pitch kalman object
+      Kalman kalmanYaw; //Yaw kalman object
+      float roll; //Euler angles
+      float pitch;
+      float yaw;
 
 };
 
-extern ICM_Data ICM_Data_Holder; //Holds data of the ICM readings
-
+extern ICM_Data_t ICM_Data_Holder; //Holds data of the ICM readings
+extern bool using_RTOS; //Boolean to determine if RTOS is used. 0 represents superloop and 1 represents RTOS operation
+extern TaskHandle_t SensorTaskHandle;
 
 // FUNCTION PROTOTYPES
-void IRAM_ATTR IMU_ISR_dataReady();
-void IRAM_ATTR IMU_ISR_DMAcomplete_callback(spi_transaction_t *trans);
+void IRAM_ATTR ICM_ISR_dataReady();
+void IRAM_ATTR ICM_ISR_DMAcomplete_callback(spi_transaction_t *trans);
 
 void ICM_write_reg(uint8_t reg, uint8_t data);
 uint8_t ICM_read_reg(uint8_t reg);
