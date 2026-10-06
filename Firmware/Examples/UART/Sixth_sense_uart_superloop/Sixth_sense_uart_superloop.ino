@@ -5,8 +5,6 @@ TaskHandle_t SensorTaskHandle = NULL;
 //Temporary boolean for RTOS vs superloop mode
 bool using_RTOS = false;
 
-#define CONTROL_LOOP_FREQUENCY 200 //This is the frequency of the low level control loop and is actuated by back IMU interrupt as the master timer
-
 void setup(void) {
       Serial.setTxBufferSize(1024); // Expand TX ring buffer to 1KB to avoid dropping serial buffers
       Serial.begin(921600);
@@ -67,8 +65,6 @@ void loop() {
             ICM_single_read();
             //Serial.printf("ICM Data: %.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\n",ICM_Data_Holder.ax,ICM_Data_Holder.ay,ICM_Data_Holder.az,ICM_Data_Holder.gx,ICM_Data_Holder.gy,ICM_Data_Holder.gz);
             
-
-            ICM_Kalman_fusion(0.005);
             //Serial.printf("MAG pin state %d\n",digitalRead(PIN_INT_MMC));
             //Serial.printf("%.4f,%.4f\n",ICM_Data_Holder.roll,ICM_Data_Holder.pitch);
             

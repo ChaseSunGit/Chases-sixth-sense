@@ -1,116 +1,128 @@
 /**
  * \file ICM42607_Driver.h
- * \brief Header file for driving the ICM42607 IMU
- *
- * \author Chase Sun
+ * \brief Header file for driving the ICM42607 IMU (OOP Version)
  */
 
 #ifndef ICM42607_DRIVER_H
 #define ICM42607_DRIVER_H
 
-// INCLUDES
 #include <Arduino.h>
-#include <Kalman.h>
-#include <Preferences.h> //Used for saving to SPI flash memory
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
 #include "Sixth_sense_SPI.h"
+#include "MMC5983MA_Driver.h" 
 
-#include "MMC5983MA_Driver.h" //This is done to allow the ICM's interrupt to drive the MMC's interrupt to unify sampling frequency
-
-
-// CONSTANTS/MACROS
-// Read length: 1 byte address header (Echo when writing register) + 14 payload bytes (2 temp, 3 accel, 3 gyro) = 15 bytes total
+// Constants / Macros
 #define ICM_BURST_LEN 15
 #define Moving_average_windowSize 10
 
-extern SPI_DMA_Channel SPI_DMA_ICM;
-
-extern volatile bool dma_in_progress_ICM;
-extern volatile bool new_data_ready_ICM;
-
-extern bool IMU_first_read;
-
-
-//SPI Pins
-#define PIN_INT_ICM     7   // IMU Data Ready Interrupt
-#define PIN_MISO_ICM    8   // Sensor SDO
-#define PIN_MOSI_ICM    9   // Sensor SDI
-#define PIN_SCLK_ICM    10  // SCLK
-#define PIN_CS_ICM      11  // CS
+// SPI Pins
+#define PIN_INT_ICM     7
+#define PIN_MISO_ICM    8
+#define PIN_MOSI_ICM    9
+#define PIN_SCLK_ICM    10
+#define PIN_CS_ICM      11
 
 // ICM 42607 registers
 #define WHO_AM_I_ICM        0x75
-
 #define INT_CONFIG_ICM      0x06
-#define INT_SOURCE0_ICM     0x2B // Source 0 chooses the source of interrupt for int1
-#define INT_SOURCE3_ICM     0x2D // Source 3 chooses the source of interrupt for int 2
-
+#define INT_SOURCE0_ICM     0x2B 
+#define INT_SOURCE3_ICM     0x2D 
 #define PWR_MGMT0_ICM       0x1F
 #define GYRO_CONFIG0_ICM    0x20
 #define ACCEL_CONFIG0_ICM   0x21
 #define GYRO_CONFIG1_ICM    0x23
 #define ACCEL_CONFIG1_ICM   0x24
+#define TEMP_CONFIG0_ICM    0x22
+#define DATA_START_ICM      0x09 
 
-#define DATA_START_ICM      0x09 // Start from temp
+#define SPI_READ_FLAG       0x80 
 
-#define SPI_READ_FLAG       0x80 //For adding to 7-bit address to identify a read operation. A write will lead with a 0 so no operation required
-
-
-// CLASSES
+constexpr float GRAVITY_ICM = 9.81f;
+constexpr float DEG2RAD_ICM = 0.01745329f;
 
 struct ICM_Data_t {
+      float temp; 
 
-      int frequency; //Data rate setting for ICM
+      float accel[3]; 
+      float accel_offset[3]; 
+      float accel_cal[3]; 
 
-      float temp; //Temp of sensor for corrections
-
-      float ax; // Acceleration X
-      float ay; // Acceleration Y
-      float az; // Acceleration Z
-      float ax_offset; //Gyro x calibrated offset. These offsets are constant and are found through the factory calibration function and set manually
-      float ay_offset; //Gyro y calibrated offset
-      float az_offset; //Gyro z calibrated offset
-
-      float gx; // Gyro X
-      float gy; // Gyro Y
-      float gz; // Gyro Z
-      float gx_offset; //Gyro x calibrated offset
-      float gy_offset; //Gyro y calibrated offset
-      float gz_offset; //Gyro z calibrated offset
-
-      Kalman kalmanRoll;//Roll kalman object
-      Kalman kalmanPitch;//Pitch kalman object
-      Kalman kalmanYaw; //Yaw kalman object
-      float roll; //Euler angles
-      float pitch;
-      float yaw;
-
+      float gyro[3];
+      float gyro_offset[3];
+      float gyro_cal[3];
 };
 
-extern ICM_Data_t ICM_Data_Holder; //Holds data of the ICM readings
-extern bool using_RTOS; //Boolean to determine if RTOS is used. 0 represents superloop and 1 represents RTOS operation
-extern TaskHandle_t SensorTaskHandle;
+struct ICM_Config_t {
+      uint8_t outputRate;     //1-8: 1 (12.5Hz), 2 (25Hz), 3 (50Hz), 4 (100Hz), 5 (200Hz, default), 6 (400Hz), 7(800Hz), 8(1600Hz)
+      uint8_t accel_bw;       //1-8: 1 (16Hz), 2 (25Hz), 3 (34Hz), 4 (53Hz), 5 (73Hz, default), 6 (121Hz), 7(180Hz), 8(Bypassed)
+      uint8_t gyro_bw;        //1-8: 1 (16Hz), 2 (25Hz), 3 (34Hz), 4 (53Hz), 5 (73Hz, default), 6 (121Hz), 7(180Hz), 8(Bypassed)
+      uint8_t accel_range;    //1-4: 1 (±2g), 2 (±4g), 3 (±8g, default), 4 (±16g)
+      uint8_t gyro_range;     //1-4: 1 (±250dps), 2 (±500dps), 3 (±1000dps, default), 4 (±2000dps)    
+};
 
-// FUNCTION PROTOTYPES
-void IRAM_ATTR ICM_ISR_dataReady();
-void IRAM_ATTR ICM_ISR_DMAcomplete_callback(spi_transaction_t *trans);
+class ICM42607 {
+public:
+      //Constructor
+      ICM42607(bool use_rtos, TaskHandle_t sensor_task);
+      //Config helper tools
+      bool read_config(ICM_Config_t &out_config);
+      bool check_config_validity(const ICM_Config_t &config);
+      static void parse_config(const ICM_Config_t &config);
+      //Initalization
+      bool init_chip(const ICM_Config_t &config);
+      //Single read
+      bool single_read();
+      //Apply calibration constants to offset measurements
+      void apply_calibration();
+      //Apply temp correction
+      void temp_correct(float accel_temp_coeff[3], float gyro_temp_coeff[3]);
+      
+      //Sensor individual calibration
+      bool accel_calib(int num_samples = 200);//Calibrated once and then store
+      bool gyro_calib(int num_samples = 200);//Calibrate at every startup
 
-void ICM_write_reg(uint8_t reg, uint8_t data);
-uint8_t ICM_read_reg(uint8_t reg);
+      //Get data for external reads
+      ICM_Data_t getData() const { return data_holder;} 
+      float getODR() const {return ODR;}
+      //Force a data ready without interrupt
+      void force_data_ready() {new_data_ready = true;}//Function to force a read by artificially raising the data ready flag
 
-bool ICM_init_chip(uint8_t outputRate = 2);
+      static ICM42607* instance; //For reference with the ISR callback
+      //ISR and DMA callback for reads
+      static void IRAM_ATTR ISR_dataReady();
+      static void IRAM_ATTR ISR_DMAcomplete_callback(spi_transaction_t *trans);
 
-//void ICM_calibration(int num_samples);
-bool ICM_single_read();
-//void ICM_factory_accel_calibration(int IMU_ID, int num_samples, volatile bool& interrupt);
+      static constexpr float odr_table[8] = {12.5f, 25.0f, 50.0f, 100.0f, 200.0f, 400.0f, 800.0f, 1600.0f};
+      static constexpr int bw_table[8] = {16, 25, 34, 53, 73, 121, 180, 0};
+      static constexpr int accel_range_table[4] = {2, 4, 8, 16};
+      static constexpr int gyro_range_table[4]  = {250, 500, 1000, 2000};
+      //Expose the lookup tables for external reference in code
 
-void ICM_Kalman_fusion(float dt,int mode = 0);
+private:
+      //SPI functions
+      void write_reg(uint8_t reg, uint8_t data);
+      uint8_t read_reg(uint8_t reg);
 
-float moving_average(float *buffer, float new_val, int &ma_index);
+      //DMA channel for ICM
+      SPI_DMA_Channel spi_dma;
+      //Private data holder
+      ICM_Data_t data_holder;
+      
+      //Booleans for handling data ready
+      volatile bool dma_in_progress;
+      volatile bool new_data_ready;
+      bool using_RTOS;
+      TaskHandle_t SensorTaskHandle;
 
-bool ICM_accel_calib(int num_samples = 200);
+      //Internal stored config values
+      int ODR; //output data rate
+      float accel_conversion; 
+      float gyro_conversion;
 
-bool ICM_gyro_calib(int num_samples = 200);
+      //Full range config
+      static constexpr float ACCEL_LSB_PER_G[4] = {2048.0, 4096.0, 8192.0, 16384.0};
+      static constexpr float GYRO_LSB_PER_DPS[4] = {16.384, 32.768, 65.536, 131.072};
 
+};
 #endif /* ICM42607_DRIVER_H */

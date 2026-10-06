@@ -1,8 +1,6 @@
 /**
  * \file MMC5983MA_Driver.h
- * \brief Header file for driving the MMC5983MA Magnetometer
-
- * \author Chase Sun
+ * \brief OOP Header file for driving the MMC5983MA Magnetometer
  */
 
 #ifndef MMC5983MA_DRIVER_H
@@ -11,22 +9,22 @@
 #include <Arduino.h>
 #include <Math.h>
 #include <String.h>
+#include <vector>
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
 #include "Sixth_sense_SPI.h"
 
 // CONSTANTS/MACROS
-// Read length: 1 byte address + 6 bytes payload (X, Y, Z 16-bit) + 1 byte (XYZ 18-bit LSBs) = 8 bytes total, ignore temp
 #define MMC_BURST_LEN   8
 #define COUNTS_PER_G_18 16384.0f // 18-bit counts per Gauss for ±2G range
 #define NULL_FIELD_18   131072.0f // 18-bit null field value for sensitivity compensation
 
 // SPI Pins
-#define PIN_INT_MMC     4   // Mag Data Ready Interrupt
-#define PIN_MISO_MMC    8   // Sensor SDO
-#define PIN_MOSI_MMC    9   // Sensor SDI
-#define PIN_SCLK_MMC    10  // SCLK
-#define PIN_CS_MMC      13  // CS
+#define PIN_INT_MMC     4   
+#define PIN_MISO_MMC    8   
+#define PIN_MOSI_MMC    9   
+#define PIN_SCLK_MMC    10  
+#define PIN_CS_MMC      13  
 
 // MMC5983MA Registers
 #define MMC_XOUT0       0x00
@@ -44,56 +42,75 @@
 #define MMC_CTRL3       0x0C
 #define MMC_PROD_ID     0x2F
 
-// SPI Command Masks
-#define MMC_SPI_READ_FLAG 0x80 // Bit 0 (MSB) = 1 for Read
-#define MMC_SPI_ADDR_MASK 0x3F // Bits 2-7 contain the 6-bit address
+#define MMC_SPI_READ_FLAG 0x80 
+#define MMC_SPI_ADDR_MASK 0x3F 
 
 // STRUCTURES
 struct MMC_Data_t {
-      // Field readings in Gauss
-      float mx;
-      float my;
-      float mz;
-
-      //Tracked post calibration readings
-      float mx_cal;
-      float my_cal;
-      float mz_cal;
-
-      //Frequency
-      int reportFrequency; // The frequency at which the sensor is reporting data
-
-      //Calibration
-      //Hard iron - constant offsets
+      float mag[3];
       float offset[3];
-      //Soft iron - 3x3 correction Matrix
       float W[3][3];
+      float mag_cal[3];
+      bool newData;//Boolean to determine if the new data being read in is new or a repeat read of the old data
 };
 
-// EXTERNAL GLOBAL VARIABLES
-extern SPI_DMA_Channel SPI_DMA_MMC;
+struct MMC_Config_t {
+      uint8_t outputRate; //1-7: 1 (1Hz), 2 (10Hz), 3 (20Hz), 4 (50Hz), 5 (100Hz), 6 (200Hz, default), 7(1000Hz)
+      uint8_t bandwidth;  //1-4: 1 (100Hz, default), 2 (200Hz), 3 (400Hz), 4 (800Hz)
+      uint8_t setFrequency; //0-8 (measurements per set): 0: (disable autoset), 1 (1 sample), 2 (25), 3 (75), 4 (100), 5 (250), 6 (500), 7 (1000), 8 (2000 samples)
+};
 
-extern volatile bool dma_in_progress_MMC;
-extern volatile bool new_data_ready_MMC;
+class MMC5983MA {
+public:
+      MMC5983MA(bool use_rtos, TaskHandle_t sensor_task);
 
-extern bool MMC_first_read;
+      // Configuration tools
+      bool read_config(MMC_Config_t &out_config);
+      bool check_config_validity(const MMC_Config_t &config);
+      static bool parse_config(const MMC_Config_t &config);
 
-extern MMC_Data_t MMC_Data_Holder;
-extern bool using_RTOS; //Boolean to determine if RTOS is used. 0 represents superloop and 1 represents RTOS operation
-extern TaskHandle_t SensorTaskHandle;
+      //Initialization
+      bool init_chip(const MMC_Config_t &config);
+      //Single read
+      bool single_read();
+      
+      // Calibration
+      bool Calibrate_Full_Soft_Hard_Iron(uint8_t num_seconds = 6, uint8_t num_timeout = 30);
+      
+      MMC_Data_t getData() const { return data_holder; }
+      float getODR() const {return ODR;}
+      void force_data_ready() { new_data_ready = true; }
 
+      static MMC5983MA* instance;
+      static void IRAM_ATTR ISR_dataReady();
+      static void IRAM_ATTR ISR_DMAcomplete_callback(spi_transaction_t *trans);
 
-// FUNCTION PROTOTYPES
-void IRAM_ATTR MMC_ISR_dataReady();
-void IRAM_ATTR MMC_ISR_DMAcomplete_callback(spi_transaction_t *trans);
+      static constexpr int freq_table[7] = { 1, 10, 20, 50, 100, 200, 1000 };
+      static constexpr int bw_hz_table[4] = { 100, 200, 400, 800 };
+      static constexpr float bw_time_table[4] = { 8.0f, 4.0f, 2.0f, 0.5f };
+      static constexpr int set_samples_table[8] = { 1, 25, 75, 100, 250, 500, 1000, 2000 };
 
-void MMC_write_reg(uint8_t reg, uint8_t data);
-uint8_t MMC_read_reg(uint8_t reg);
+private:
+      void Apply_Cal_Matrix();
 
-bool MMC_init_chip(uint8_t outputRate = 6);
-bool MMC_single_read();
+      // Internal Math / Calibration Helpers
+      bool Solve9x9(float A[9][9], float b[9], float x[9]);
+      bool Invert3x3(const float A[3][3], float inv[3][3]);
+      bool MatrixSqrt3x3(const float M[3][3], float W[3][3]);
+      size_t MMC_Read_Block(uint8_t block_seconds, std::vector<float>& x_out, std::vector<float>& y_out, std::vector<float>& z_out);
+      bool Evaluate_Calibration_Quality(const std::vector<float>& raw_x, const std::vector<float>& raw_y, const std::vector<float>& raw_z, const float offset[3], const float W[3][3]);
 
-bool Calibrate_Full_Soft_Iron(uint8_t num_seconds = 6, uint8_t num_timeout = 30);
-void Apply_Cal_Matrix();
+      SPI_DMA_Channel spi_dma;
+      MMC_Data_t data_holder;
+      
+      int ODR; //output data rate
+
+      volatile bool dma_in_progress;
+      volatile bool new_data_ready;
+      bool using_RTOS;
+      TaskHandle_t SensorTaskHandle;
+
+      uint32_t mag_last_measurement[3];//Used to track if a new measurement is made by seeing if it is the same as the last measurement
+};
 
 #endif /* MMC5983MA_DRIVER_H */

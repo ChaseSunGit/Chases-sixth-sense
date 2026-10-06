@@ -1,34 +1,123 @@
-#include "Sensor_Fusion.h"
-
-
-Full_IMU_Data_t Full_IMU_Data
 /**
- * \brief Performs the full sensor fusion with available IMU measurements
- * 
- * \param mode select the data to be computed using a bit array
-                  MSB
-                  7 - not used
-                  6 - not used
-                  5 - not used
-                  4 - not used
-                  3 - Quaternions
-                  2 - Eulers
-                  1 - Magnetometer
-                  0 - Accelerometer + Gyroscope
-                  LSB
- * \return true if sensor fusion was performed correctly
+ * \file SixthSense_IMU.cpp
+ * \brief Implementation of the unified SixthSense_IMU wrapper.
  */
-bool Update_Sensor_Fusion(uint8_t mode) {
-    // NOTE: Insert your preferred Madgwick or Mahony algorithm math here.
-    // This updates Fusion_Data.q[0...3].
 
-    // Convert Quaternions to Euler Angles (Standard Aerospace Sequence)
-    float w = Fusion_Data.q[0];
-    float x = Fusion_Data.q[1];
-    float y = Fusion_Data.q[2];
-    float z = Fusion_Data.q[3];
+#include "SixthSense_IMU.h"
 
-    Fusion_Data.roll  = atan2(2.0f * (w * x + y * z), 1.0f - 2.0f * (x * x + y * y)) * 57.29578f;
-    Fusion_Data.pitch = asin(2.0f * (w * y - z * x)) * 57.29578f;
-    Fusion_Data.yaw   = atan2(2.0f * (w * z + x * y), 1.0f - 2.0f * (y * y + z * z)) * 57.29578f;
+// Initialize both objects via initializer list passing RTOS settings[cite: 1, 3]
+SixthSense_IMU::SixthSense_IMU(bool use_rtos, TaskHandle_t sensor_task) 
+            : icm(use_rtos, sensor_task), 
+              mmc(use_rtos, sensor_task), 
+              last_time_micros(0) {
+      
+      // Initialize Fusion structures
+      FusionOffsetInitialise(&offset, 2000); 
+      FusionAhrsInitialise(&ahrs);
+}
+
+bool SixthSense_IMU::init(const ICM_Config_t &icm_cfg, const MMC_Config_t &mmc_cfg) {
+    bool icm_ready = icm.init_chip(icm_cfg);
+    bool mmc_ready = mmc.init_chip(mmc_cfg);
+
+    if (icm_ready) {
+        // Configure x-io AHRS settings based on initialization
+        FusionAhrsSettings settings = {
+            .convention = FusionConventionNwu,
+            .gain = 0.5f,
+            .gyroscopeRange = 2000.0f,
+            .accelerationRejection = 10.0f,
+            .magneticRejection = 10.0f,
+            .recoveryTriggerPeriod = 5 * (int)icm.getODR() 
+        };
+        FusionAhrsSetSettings(&ahrs, &settings);
+        FusionOffsetInitialise(&offset, (int)icm.getODR());
+    }
+
+    last_time_micros = micros();
+    return (icm_ready && mmc_ready);
+}
+
+bool SixthSense_IMU::processSensorData() {
+    // Attempt single_reads. These unpack the DMA buffers if data is flagged ready[cite: 1, 3]
+    bool icm_new = icm.single_read();
+    bool mmc_new = mmc.single_read();
+
+    // If no new accelerometer/gyro data, skip fusion update for this cycle
+    if (!icm_new) return false;
+
+    // Time delta integration
+    uint32_t current_time = micros();
+    float delta_time = (current_time - last_time_micros) / 1000000.0f;
+    last_time_micros = current_time;
+
+    ICM_Data_t icm_data = icm.getData();
+    MMC_Data_t mmc_data = mmc.getData();
+
+    // x-io expects g and dps. ICM provides m/s^2 and rad/s[cite: 1].
+    FusionVector gyroscope = {
+        .axis = {
+            icm_data.gyro_cal[0] * RAD_TO_DPS,
+            icm_data.gyro_cal[1] * RAD_TO_DPS,
+            icm_data.gyro_cal[2] * RAD_TO_DPS
+        }
+    };
+
+    FusionVector accelerometer = {
+        .axis = {
+            icm_data.accel_cal[0] * MS2_TO_G,
+            icm_data.accel_cal[1] * MS2_TO_G,
+            icm_data.accel_cal[2] * MS2_TO_G
+        }
+    };
+
+    // MMC5983MA provides Gauss directly via single_read[cite: 3].
+    FusionVector magnetometer = {
+        .axis = {
+            mmc_data.mx_cal,
+            mmc_data.my_cal,
+            mmc_data.mz_cal
+        }
+    };
+
+    // Apply offset compensation and run the fusion algorithm
+    gyroscope = FusionOffsetUpdate(&offset, gyroscope);
+    
+    if (mmc_new) {
+        FusionAhrsUpdate(&ahrs, gyroscope, accelerometer, magnetometer, delta_time);
+    } else {
+        // If mag data isn't fresh (e.g. mag ODR is lower than IMU ODR), run without mag update
+        FusionAhrsUpdateNoMagnetometer(&ahrs, gyroscope, accelerometer, delta_time);
+    }
+
+    return true;
+}
+
+// Pass-through wrapper functions
+bool SixthSense_IMU::calibrateAccel(int num_samples) {
+    return icm.accel_calib(num_samples);
+}
+
+bool SixthSense_IMU::calibrateGyro(int num_samples) {
+    return icm.gyro_calib(num_samples);
+}
+
+bool SixthSense_IMU::calibrateMag(uint8_t num_seconds, uint8_t num_timeout) {
+    return mmc.Calibrate_Full_Soft_Hard_Iron(num_seconds, num_timeout);
+}
+
+ICM_Data_t SixthSense_IMU::getICMData() const {
+    return icm.getData();
+}
+
+MMC_Data_t SixthSense_IMU::getMMCData() const {
+    return mmc.getData();
+}
+
+FusionEuler SixthSense_IMU::getEulerAngles() const {
+    return FusionQuaternionToEuler(FusionAhrsGetQuaternion(&ahrs));
+}
+
+FusionQuaternion SixthSense_IMU::getQuaternion() const {
+    return FusionAhrsGetQuaternion(&ahrs);
 }
