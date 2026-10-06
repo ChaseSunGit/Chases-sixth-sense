@@ -38,8 +38,6 @@
 
 #define SPI_READ_FLAG       0x80 
 
-constexpr float GRAVITY_ICM = 9.81f;
-constexpr float DEG2RAD_ICM = 0.01745329f;
 
 struct ICM_Data_t {
       float temp; 
@@ -59,22 +57,28 @@ struct ICM_Config_t {
       uint8_t gyro_bw;        //1-8: 1 (16Hz), 2 (25Hz), 3 (34Hz), 4 (53Hz), 5 (73Hz, default), 6 (121Hz), 7(180Hz), 8(Bypassed)
       uint8_t accel_range;    //1-4: 1 (±2g), 2 (±4g), 3 (±8g, default), 4 (±16g)
       uint8_t gyro_range;     //1-4: 1 (±250dps), 2 (±500dps), 3 (±1000dps, default), 4 (±2000dps)    
+      bool chip_enable;       //Switch to toggle ICM: 0 - disable, 1 - enable
 };
 
 class ICM42607 {
 public:
       //Constructor
       ICM42607(bool use_rtos, TaskHandle_t sensor_task);
+
       //Config helper tools
       bool read_config(ICM_Config_t &out_config);
       bool check_config_validity(const ICM_Config_t &config);
       static void parse_config(const ICM_Config_t &config);
+
       //Initalization
       bool init_chip(const ICM_Config_t &config);
+
       //Single read
       bool single_read();
+
       //Apply calibration constants to offset measurements
       void apply_calibration();
+
       //Apply temp correction
       void temp_correct(float accel_temp_coeff[3], float gyro_temp_coeff[3]);
       
@@ -85,6 +89,7 @@ public:
       //Get data for external reads
       ICM_Data_t getData() const { return data_holder;} 
       float getODR() const {return ODR;}
+
       //Force a data ready without interrupt
       void force_data_ready() {new_data_ready = true;}//Function to force a read by artificially raising the data ready flag
 
@@ -106,6 +111,7 @@ private:
 
       //DMA channel for ICM
       SPI_DMA_Channel spi_dma;
+
       //Private data holder
       ICM_Data_t data_holder;
       

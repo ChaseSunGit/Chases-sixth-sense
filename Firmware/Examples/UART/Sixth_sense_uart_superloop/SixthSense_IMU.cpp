@@ -95,23 +95,33 @@ bool SixthSense_IMU::processSensorData() {
 
 // Pass-through wrapper functions
 bool SixthSense_IMU::calibrateAccel(int num_samples) {
-    return icm.accel_calib(num_samples);
+      return icm.accel_calib(num_samples);
 }
 
 bool SixthSense_IMU::calibrateGyro(int num_samples) {
-    return icm.gyro_calib(num_samples);
+      return icm.gyro_calib(num_samples);
 }
 
 bool SixthSense_IMU::calibrateMag(uint8_t num_seconds, uint8_t num_timeout) {
-    return mmc.Calibrate_Full_Soft_Hard_Iron(num_seconds, num_timeout);
+      return mmc.Calibrate_Full_Soft_Hard_Iron(num_seconds, num_timeout);
 }
 
 ICM_Data_t SixthSense_IMU::getICMData() const {
-    return icm.getData();
+      return icm.getData();
 }
 
 MMC_Data_t SixthSense_IMU::getMMCData() const {
-    return mmc.getData();
+      return mmc.getData();
+}
+
+void SixthSense_IMU:readICMconfig() {
+      ICM_Config_t read_config;
+      return icm.read_config(read_config);
+}
+
+void SixthSense_IMU:readMMCconfig() {
+      MMC_Config_t read_config;
+      return mmc.read_config(read_config);
 }
 
 FusionEuler SixthSense_IMU::getEulerAngles() const {

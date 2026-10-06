@@ -103,6 +103,19 @@ uint8_t ICM42607::read_reg(uint8_t reg) {
  */
 bool ICM42607::init_chip(const ICM_Config_t &ICM_Config) {
 
+      //Check if chip is enabled
+      if (!ICM_Config.chip_enable){
+            Serial.println("[ICM] ICM chip disabled");
+            return false;
+      }
+
+      //Before configuration, check validity of the struct passed in for out of bounds values
+      if (!check_config_validity(ICM_Config)){
+            return 0;
+      }
+
+      
+
       data_holder = {};//Empty out any holder value during initialization
 
       //First setup the SPI bus
@@ -134,10 +147,7 @@ bool ICM42607::init_chip(const ICM_Config_t &ICM_Config) {
       //6. Set PWR_MGMT0 register to configure clock, gyro and accel in low noise mode mode
       //7. Check if the IMU id is what we expect - this checks if there is a valid connection to the IMU after all configuration
 
-      //Before configuration, check validity of the struct passed in for out of bounds values
-      if (!check_config_validity(ICM_Config)){
-            return 0;
-      }
+      
 
       //First, We will use bitwise operations to construct the configuration for sample rate, bandwidth, and range of both accel and gyro
       uint8_t accel_ODR = 13 - ICM_Config.outputRate; //The accel odr ranges from 5 (1600 Hz) to 12 (12.5Hz) on the ACCEL_CONFIG0 register.
@@ -259,6 +269,8 @@ bool ICM42607::read_config(ICM_Config_t &out_config) {
       out_config.accel_bw = 8 - (accel_conf1 & 0x07);
       out_config.gyro_bw  = 8 - (gyro_conf1 & 0x07);
 
+      parse_config(out_config);
+
       return true;
 }
 
@@ -340,8 +352,8 @@ bool ICM42607::single_read(){
       //Convert accel and gyro values with scaling
 
       for (int i = 0; i < 3; i++){
-            data_holder.accel[i] = accel_raw[i] / data_holder.accel_conversion * GRAVITY_ICM;
-            data_holder.gyro[i] = gyro_raw[i] / data_holder.gyro_conversion * DEG2RAD_ICM;
+            data_holder.accel[i] = accel_raw[i] / data_holder.accel_conversion; //reading Gs
+            data_holder.gyro[i] = gyro_raw[i] / data_holder.gyro_conversion; //reading dps
       }
       
       //Apply calibration
@@ -370,8 +382,8 @@ void ICM42607::apply_calibration(){
  */
 void ICM42607::temp_correct() {
       // Nominal datasheet typical offset drift coefficients
-      constexpr float ACCEL_TEMP_COEFF = 0.15e-3f * GRAVITY_ICM;    // ~0.0014715 m/s^2 per deg C
-      constexpr float GYRO_TEMP_COEFF  = 0.015f * DEG2RAD_ICM;   // ~0.0002618 rad/s per deg C
+      constexpr float ACCEL_TEMP_COEFF = 0.15e-3f;
+      constexpr float GYRO_TEMP_COEFF  = 0.015f;   
 
       // Calculate deviation from nominal 25 deg C room temperature reference
       float temp_delta = data_holder.temp - 25.0f;

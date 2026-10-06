@@ -55,9 +55,10 @@ struct MMC_Data_t {
 };
 
 struct MMC_Config_t {
-      uint8_t outputRate; //1-7: 1 (1Hz), 2 (10Hz), 3 (20Hz), 4 (50Hz), 5 (100Hz), 6 (200Hz, default), 7(1000Hz)
-      uint8_t bandwidth;  //1-4: 1 (100Hz, default), 2 (200Hz), 3 (400Hz), 4 (800Hz)
-      uint8_t setFrequency; //0-8 (measurements per set): 0: (disable autoset), 1 (1 sample), 2 (25), 3 (75), 4 (100), 5 (250), 6 (500), 7 (1000), 8 (2000 samples)
+      uint8_t outputRate;     //1-7: 1 (1Hz), 2 (10Hz), 3 (20Hz), 4 (50Hz), 5 (100Hz), 6 (200Hz, default), 7(1000Hz)
+      uint8_t bandwidth;      //1-4: 1 (100Hz, default), 2 (200Hz), 3 (400Hz), 4 (800Hz)
+      uint16_t setFrequency;   //0-8 (measurements per set): 0: (disable autoset), 1 (1 sample), 2 (25), 3 (75), 4 (100), 5 (250), 6 (500), 7 (1000), 8 (2000 samples)
+      bool chip_enable;       //0 - disable, 1 - enable
 };
 
 class MMC5983MA {

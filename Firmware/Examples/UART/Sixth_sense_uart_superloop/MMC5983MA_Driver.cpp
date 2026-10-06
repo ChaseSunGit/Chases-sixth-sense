@@ -101,6 +101,28 @@ bool MMC5983MA::check_config_validity(const MMC_Config_t &config) {
 }
 
 /**
+ * \brief Reads the device registers and populates the 1-indexed config struct.
+ */
+bool MMC5983MA::read_config(MMC_Config_t &out_config) {
+      uint8_t ctrl1 = read_reg(MMC_CTRL1);
+      uint8_t ctrl2 = read_reg(MMC_CTRL2);
+      
+      out_config.bandwidth  = (ctrl1 & 0x03) + 1;
+      out_config.outputRate = (ctrl2 & 0x07);
+
+      // Bit 7: En_prd_set. If 0, periodic set is disabled.
+      if (ctrl2 & 0x80) {
+            out_config.setFrequency = ((ctrl2 >> 4) & 0x07) + 1;
+      } else {
+            out_config.setFrequency = 0;
+      }
+
+      parse_config(out_config);
+
+      return true;
+}
+
+/**
  * \brief Reads the device registers to populate the configuration struct.
  */
 static void MMC5983MA::parse_config(const MMC_Config_t &config) {
@@ -131,31 +153,20 @@ static void MMC5983MA::parse_config(const MMC_Config_t &config) {
       Serial.println("---------------------------------------");
 }
 
-
-/**
- * \brief Reads the device registers and populates the 1-indexed config struct.
- */
-bool MMC5983MA::read_config(MMC_Config_t &out_config) {
-      uint8_t ctrl1 = read_reg(MMC_CTRL1);
-      uint8_t ctrl2 = read_reg(MMC_CTRL2);
-      
-      out_config.bandwidth  = (ctrl1 & 0x03) + 1;
-      out_config.outputRate = (ctrl2 & 0x07);
-
-      // Bit 7: En_prd_set. If 0, periodic set is disabled.
-      if (ctrl2 & 0x80) {
-            out_config.setFrequency = ((ctrl2 >> 4) & 0x07) + 1;
-      } else {
-            out_config.setFrequency = 0;
-      }
-
-      return true;
-}
-
 /**
  * \brief Initializes the MMC5983MA into continuous measurement mode with explicit config.
  */
 bool MMC5983MA::init_chip(const MMC_Config_t &config) {
+
+      if (!config.chip_enable){
+            Serial.println("[MMC] MMC chip disabled");
+            return false;
+      }
+
+      if (!check_config_validity(config)) {
+            Serial.println("[MMC-ERROR] Invalid configuration parameters. Aborting Init.");
+            return false;
+      }
 
       // Initialize offsets
       data_holder.offset[0] = 0.0f;
@@ -173,11 +184,6 @@ bool MMC5983MA::init_chip(const MMC_Config_t &config) {
       mag_last_measurement[0] = 0;
 
       data_holder.newData = false;//Assume no new data will come in unless proven otherwise
-            
-      if (!check_config_validity(config)) {
-            Serial.println("[MMC-ERROR] Invalid configuration parameters. Aborting Init.");
-            return false;
-      }
 
       // Initialize SPI bus
       if (!SPI_Bus_Init(PIN_MOSI_MMC, PIN_MISO_MMC, PIN_SCLK_MMC)) {
