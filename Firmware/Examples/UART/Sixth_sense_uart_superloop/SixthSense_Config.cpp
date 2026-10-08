@@ -1,6 +1,6 @@
 /**
  * \file SixthSense_Config.cpp
- * \brief Implementation of the configuration manager.
+ * \brief Implementation of the configuration manager with sub-menus.
  */
 
 #include "SixthSense_Config.h"
@@ -11,18 +11,20 @@ bool SixthSense_Config::begin(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusi
       // Initialize NVS
       esp_err_t err = nvs_flash_init();
       if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-            // NVS partition was truncated and needs to be erased
             ESP_ERROR_CHECK(nvs_flash_erase());
             err = nvs_flash_init();
       }
       ESP_ERROR_CHECK(err);
 
-      // Load configs or set defaults
-      if (!loadConfigs(icm_cfg, mmc_cfg, fusion_cfg)) {
-            Serial.println("[NVS] No saved configs found. Loading defaults.");
-            imu->returnDefaultConfig(icm_cfg, mmc_cfg, fusion_cfg);
+      // Attempt to load. If either fails, it's the first time running (or memory was wiped)
+      bool configsLoaded = loadConfigs(icm_cfg, mmc_cfg, fusion_cfg);
+      bool calsLoaded = loadCalibration();
+
+      if (!configsLoaded || !calsLoaded) {
+            Serial.println("[NVS] No saved configurations found. Performing initial setup...");
+            factoryReset(icm_cfg, mmc_cfg, fusion_cfg);
       } else {
-            Serial.println("[NVS] Configs loaded from flash.");
+            Serial.println("[NVS] Configurations and calibrations successfully loaded from flash.");
       }
       return true;
 }
@@ -37,97 +39,220 @@ void SixthSense_Config::checkUART(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, 
       }
 }
 
+void SixthSense_Config::factoryReset(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg) {
+      Serial.println("[Config] Generating default configurations...");
+      imu->returnDefaultConfig(icm_cfg, mmc_cfg, fusion_cfg);
+
+      // Zero out IMU calibrations (using Identity Matrix for Magnetometer Soft Iron)
+      ICM_Cal_t icm_cal = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
+      MMC_Cal_t mmc_cal = { 
+            {0.0f, 0.0f, 0.0f}, 
+            { {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f} } 
+      };
+
+      imu->setICMCal(icm_cal);
+      imu->setMMCCal(mmc_cal);
+
+      // Write to memory
+      saveConfigs(icm_cfg, mmc_cfg, fusion_cfg);
+      saveCalibration();
+
+      Serial.println("[Config] Factory reset complete. Defaults committed to flash.");
+}
+
 void SixthSense_Config::enterConfigMode(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg) {
       Serial.println("\n=== ENTERING CONFIGURATION MODE ===");
+      imu->RTOS_suspendReading(); // Halt background sensor tasks
       
-      // Suspend RTOS task to stop data processing while interacting
-      imu->suspendTask(); 
-      
-      printMenu();
+      printMainMenu();
 
       bool inConfig = true;
       while (inConfig) {
             if (Serial.available()) {
                   String cmd = Serial.readStringUntil('\n');
                   cmd.trim();
+                  cmd.toLowerCase();
                   
-                  if (cmd.equalsIgnoreCase("exit")) {
-                  Serial.println("Exiting config mode. Applying and saving changes...");
+                  if (cmd == "exit") {
+                  Serial.println("Exiting... Saving and re-initializing sensors.");
                   saveConfigs(icm_cfg, mmc_cfg, fusion_cfg);
-                  
-                  // Re-initialize sensors with new structs
                   imu->sensor_init(icm_cfg, mmc_cfg, fusion_cfg);
-                  
-                  // Apply loaded/updated calibrations
-                  loadCalibration(); 
-                  
                   inConfig = false;
-                  } else if (cmd.equalsIgnoreCase("menu")) {
-                  printMenu();
+                  } else if (cmd == "menu") {
+                  printMainMenu();
+                  } else if (cmd == "accel") {
+                  accelMenu(icm_cfg);
+                  } else if (cmd == "gyro") {
+                  gyroMenu(icm_cfg);
+                  } else if (cmd == "mag") {
+                  magMenu(mmc_cfg);
+                  } else if (cmd == "fusion") {
+                  fusionMenu(fusion_cfg);
+                  } else if (cmd == "cal_accel") {
+                  Serial.println("Calibrating Accel...");
+                  imu->calibrateAccel(200);
+                  } else if (cmd == "cal_gyro") {
+                  Serial.println("Calibrating Gyro...");
+                  imu->calibrateGyro(200);
+                  } else if (cmd == "cal_mag") {
+                  Serial.println("Calibrating Mag...");
+                  imu->calibrateMag(6, 30);
+                  } else if (cmd == "save_cal") {
+                  saveCalibration();
+                  } else if (cmd == "factory_reset") {
+                  factoryReset(icm_cfg, mmc_cfg, fusion_cfg);
+                  Serial.println("Reset applied. You can edit further or type 'exit' to deploy.");
                   } else {
-                  parseCommand(cmd, icm_cfg, mmc_cfg, fusion_cfg);
+                  Serial.println("Unknown command. Type 'menu' for options.");
                   }
             }
-            vTaskDelay(pdMS_TO_TICKS(10)); // Prevent watchdog starvation
+            vTaskDelay(pdMS_TO_TICKS(10)); 
       }
 
       Serial.println("=== RESUMING SENSOR OPERATIONS ===");
-      imu->resumeTask();
+      imu->RTOS_resumeReading();
 }
 
-void SixthSense_Config::printMenu() {
-      Serial.println("Available Commands:");
-      Serial.println("  set icm_odr <1-8>         - Set ICM Output Data Rate");
-      Serial.println("  set icm_accel_range <1-4> - Set ICM Accel Range");
-      Serial.println("  set mmc_odr <1-7>         - Set MMC Output Data Rate");
-      Serial.println("  cal accel                 - Calibrate Accelerometer");
-      Serial.println("  cal gyro                  - Calibrate Gyroscope");
-      Serial.println("  cal mag                   - Calibrate Magnetometer");
-      Serial.println("  save_cal                  - Save current calibration to flash");
-      Serial.println("  exit                      - Save configs, re-init, and exit");
+void SixthSense_Config::printMainMenu() {
+      Serial.println("\n--- MAIN MENU ---");
+      Serial.println("Type a category to enter its sub-menu:");
+      Serial.println("  accel         - Accelerometer Settings (ODR, Range, BW, Enable)");
+      Serial.println("  gyro          - Gyroscope Settings (Range, BW)");
+      Serial.println("  mag           - Magnetometer Settings (ODR, BW, Set Freq, Enable)");
+      Serial.println("  fusion        - Sensor Fusion Settings (Gains, Rejections, Axis)");
+      Serial.println("\nDirect Commands:");
+      Serial.println("  cal_accel     - Calibrate Accelerometer");
+      Serial.println("  cal_gyro      - Calibrate Gyroscope");
+      Serial.println("  cal_mag       - Calibrate Magnetometer");
+      Serial.println("  save_cal      - Save current calibration to flash");
+      Serial.println("  factory_reset - Wipe flash and load defaults");
+      Serial.println("  exit          - Save all changes, apply, and resume operation");
 }
 
-void SixthSense_Config::parseCommand(String cmd, ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg) {
-      int spaceIdx = cmd.indexOf(' ');
-      String action = (spaceIdx == -1) ? cmd : cmd.substring(0, spaceIdx);
-      String target = (spaceIdx == -1) ? "" : cmd.substring(spaceIdx + 1);
+// --------------------------------------------------------
+// SUB-MENUS
+// --------------------------------------------------------
 
-      if (action.equalsIgnoreCase("set")) {
-            int valIdx = target.indexOf(' ');
-            if (valIdx == -1) { Serial.println("Invalid set command. Format: set <variable> <value>"); return; }
-            
-            String var = target.substring(0, valIdx);
-            int value = target.substring(valIdx + 1).toInt();
+void SixthSense_Config::accelMenu(ICM_Config_t &icm_cfg) {
+      Serial.println("\n--- ACCEL SETTINGS ---");
+      Serial.println("Format: set <param> <value> | Example: set odr 5");
+      Serial.println("Params: odr (1-8), range (1-4), bw (1-8), enable (0-1)");
+      Serial.println("Type 'back' to return to main menu.");
 
-            if (var.equalsIgnoreCase("icm_odr")) { icm_cfg.outputRate = value; Serial.printf("ICM ODR set to %d\n", value); }
-            else if (var.equalsIgnoreCase("icm_accel_range")) { icm_cfg.accel_range = value; Serial.printf("ICM Accel Range set to %d\n", value); }
-            else if (var.equalsIgnoreCase("mmc_odr")) { mmc_cfg.outputRate = value; Serial.printf("MMC ODR set to %d\n", value); }
-            else { Serial.println("Unknown variable."); }
-            
-      } else if (action.equalsIgnoreCase("cal")) {
-            if (target.equalsIgnoreCase("accel")) {
-                  Serial.println("Calibrating Accel...");
-                  imu->calibrateAccel(200);
-            } else if (target.equalsIgnoreCase("gyro")) {
-                  Serial.println("Calibrating Gyro...");
-                  imu->calibrateGyro(200);
-            } else if (target.equalsIgnoreCase("mag")) {
-                  Serial.println("Calibrating Mag...");
-                  imu->calibrateMag(6, 30);
+      while(true) {
+            if (Serial.available()) {
+                  String cmd = Serial.readStringUntil('\n'); cmd.trim(); cmd.toLowerCase();
+                  if (cmd == "back") { printMainMenu(); return; }
+                  
+                  if (cmd.startsWith("set ")) {
+                  int spaceIdx = cmd.lastIndexOf(' ');
+                  String param = cmd.substring(4, spaceIdx);
+                  int val = cmd.substring(spaceIdx + 1).toInt();
+
+                  if (param == "odr") { icm_cfg.outputRate = val; Serial.printf("ICM ODR set to %d\n", val); }
+                  else if (param == "range") { icm_cfg.accel_range = val; Serial.printf("Accel Range set to %d\n", val); }
+                  else if (param == "bw") { icm_cfg.accel_bw = val; Serial.printf("Accel BW set to %d\n", val); }
+                  else if (param == "enable") { icm_cfg.chip_enable = val; Serial.printf("ICM Enable set to %d\n", val); }
+                  else Serial.println("Unknown parameter.");
+                  }
             }
-      } else if (action.equalsIgnoreCase("save_cal")) {
-            saveCalibration();
-      } else {
-            Serial.println("Unknown command. Type 'menu' for options.");
+            vTaskDelay(10);
+      }
+      }
+
+      void SixthSense_Config::gyroMenu(ICM_Config_t &icm_cfg) {
+      Serial.println("\n--- GYRO SETTINGS ---");
+      Serial.println("Format: set <param> <value> | Example: set range 3");
+      Serial.println("Params: range (1-4), bw (1-8)");
+      Serial.println("Note: Gyro ODR is shared with Accel ODR. Type 'back' to return.");
+
+      while(true) {
+            if (Serial.available()) {
+                  String cmd = Serial.readStringUntil('\n'); cmd.trim(); cmd.toLowerCase();
+                  if (cmd == "back") { printMainMenu(); return; }
+                  
+                  if (cmd.startsWith("set ")) {
+                  int spaceIdx = cmd.lastIndexOf(' ');
+                  String param = cmd.substring(4, spaceIdx);
+                  int val = cmd.substring(spaceIdx + 1).toInt();
+
+                  if (param == "range") { icm_cfg.gyro_range = val; Serial.printf("Gyro Range set to %d\n", val); }
+                  else if (param == "bw") { icm_cfg.gyro_bw = val; Serial.printf("Gyro BW set to %d\n", val); }
+                  else Serial.println("Unknown parameter.");
+                  }
+            }
+            vTaskDelay(10);
       }
 }
+
+void SixthSense_Config::magMenu(MMC_Config_t &mmc_cfg) {
+      Serial.println("\n--- MAG SETTINGS ---");
+      Serial.println("Format: set <param> <value> | Example: set odr 6");
+      Serial.println("Params: odr (1-7), bw (1-4), setfreq (0-8), enable (0-1)");
+      Serial.println("Type 'back' to return to main menu.");
+
+      while(true) {
+            if (Serial.available()) {
+                  String cmd = Serial.readStringUntil('\n'); cmd.trim(); cmd.toLowerCase();
+                  if (cmd == "back") { printMainMenu(); return; }
+                  
+                  if (cmd.startsWith("set ")) {
+                  int spaceIdx = cmd.lastIndexOf(' ');
+                  String param = cmd.substring(4, spaceIdx);
+                  int val = cmd.substring(spaceIdx + 1).toInt();
+
+                  if (param == "odr") { mmc_cfg.outputRate = val; Serial.printf("MMC ODR set to %d\n", val); }
+                  else if (param == "bw") { mmc_cfg.bandwidth = val; Serial.printf("MMC BW set to %d\n", val); }
+                  else if (param == "setfreq") { mmc_cfg.setFrequency = val; Serial.printf("MMC Set Frequency set to %d\n", val); }
+                  else if (param == "enable") { mmc_cfg.chip_enable = val; Serial.printf("MMC Enable set to %d\n", val); }
+                  else Serial.println("Unknown parameter.");
+                  }
+            }
+            vTaskDelay(10);
+      }
+}
+
+void SixthSense_Config::fusionMenu(Fusion_Config_t &cfg) {
+      Serial.println("\n--- FUSION SETTINGS ---");
+      Serial.println("Format: set <param> <value> | Example: set gain 0.3");
+      Serial.println("Params (Int): enable (0-1), axis (1-3)");
+      Serial.println("Params (Float): gain, accel_rej, mag_rej, recovery, gyro_thresh, gyro_period");
+      Serial.println("Type 'back' to return to main menu.");
+
+      while(true) {
+            if (Serial.available()) {
+                  String cmd = Serial.readStringUntil('\n'); cmd.trim(); cmd.toLowerCase();
+                  if (cmd == "back") { printMainMenu(); return; }
+                  
+                  if (cmd.startsWith("set ")) {
+                  int spaceIdx = cmd.lastIndexOf(' ');
+                  String param = cmd.substring(4, spaceIdx);
+                  float val = cmd.substring(spaceIdx + 1).toFloat();
+
+                  if (param == "enable") { cfg.fusion_enable = (bool)val; Serial.printf("Fusion Enable set to %d\n", (int)val); }
+                  else if (param == "axis") { cfg.axis_setting = (int)val; Serial.printf("Axis Setting set to %d\n", (int)val); }
+                  else if (param == "gain") { cfg.fusion_gain = val; Serial.printf("Gain set to %.3f\n", val); }
+                  else if (param == "accel_rej") { cfg.accel_rejection = val; Serial.printf("Accel Rejection set to %.2f\n", val); }
+                  else if (param == "mag_rej") { cfg.mag_rejection = val; Serial.printf("Mag Rejection set to %.2f\n", val); }
+                  else if (param == "recovery") { cfg.recovery_period = val; Serial.printf("Recovery Period set to %.2f\n", val); }
+                  else if (param == "gyro_thresh") { cfg.gyro_stationary_threshold = val; Serial.printf("Gyro Thresh set to %.2f\n", val); }
+                  else if (param == "gyro_period") { cfg.gyro_stationary_period = val; Serial.printf("Gyro Period set to %.2f\n", val); }
+                  else Serial.println("Unknown parameter.");
+                  }
+            }
+            vTaskDelay(10);
+      }
+}
+
+// --------------------------------------------------------
+// NVS MEMORY OPERATIONS
+// --------------------------------------------------------
 
 bool SixthSense_Config::loadConfigs(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg) {
       if (nvs_open("SixthSense", NVS_READONLY, &my_handle) != ESP_OK) return false;
       
-      size_t len = sizeof(ICM_Config_t);
       bool success = true;
-      
+      size_t len = sizeof(ICM_Config_t);
       if (nvs_get_blob(my_handle, "icm_cfg", &icm_cfg, &len) != ESP_OK) success = false;
       
       len = sizeof(MMC_Config_t);
@@ -155,18 +280,9 @@ bool SixthSense_Config::saveConfigs(const ICM_Config_t &icm_cfg, const MMC_Confi
 bool SixthSense_Config::saveCalibration() {
       if (nvs_open("SixthSense", NVS_READWRITE, &my_handle) != ESP_OK) return false;
 
-      // Extract current calibration arrays from the sensor wrappers
-      ICM_Data_t icmData = imu->getICMData();
-      MMC_Data_t mmcData = imu->getMMCData();
-
-      ICM_Cal_t icmCal;
-      MMC_Cal_t mmcCal;
-
-      memcpy(icmCal.accel_offset, icmData.accel_offset, sizeof(icmCal.accel_offset));
-      memcpy(icmCal.gyro_offset, icmData.gyro_offset, sizeof(icmCal.gyro_offset));
-      
-      memcpy(mmcCal.offset, mmcData.offset, sizeof(mmcCal.offset));
-      memcpy(mmcCal.W, mmcData.W, sizeof(mmcCal.W));
+      // Grab the exposed calibration structs from the hardware wrapper
+      ICM_Cal_t icmCal = imu->getICMCal();
+      MMC_Cal_t mmcCal = imu->getMMCCal();
 
       nvs_set_blob(my_handle, "icm_cal", &icmCal, sizeof(ICM_Cal_t));
       nvs_set_blob(my_handle, "mmc_cal", &mmcCal, sizeof(MMC_Cal_t));
@@ -174,7 +290,7 @@ bool SixthSense_Config::saveCalibration() {
       nvs_commit(my_handle);
       nvs_close(my_handle);
       
-      Serial.println("Calibration matrices saved to flash.");
+      Serial.println("[Config] Calibration matrices saved to flash.");
       return true;
 }
 
@@ -183,17 +299,22 @@ bool SixthSense_Config::loadCalibration() {
 
       ICM_Cal_t icmCal;
       MMC_Cal_t mmcCal;
+      bool success = true;
+
       size_t len = sizeof(ICM_Cal_t);
-      
       if (nvs_get_blob(my_handle, "icm_cal", &icmCal, &len) == ESP_OK) {
-            imu->setICMCalibration(icmCal.accel_offset, icmCal.gyro_offset);
+            imu->setICMCal(icmCal);
+      } else {
+            success = false;
       }
       
       len = sizeof(MMC_Cal_t);
       if (nvs_get_blob(my_handle, "mmc_cal", &mmcCal, &len) == ESP_OK) {
-            imu->setMMCCalibration(mmcCal.offset, mmcCal.W);
+            imu->setMMCCal(mmcCal);
+      } else {
+            success = false;
       }
       
       nvs_close(my_handle);
-      return true;
+      return success;
 }
