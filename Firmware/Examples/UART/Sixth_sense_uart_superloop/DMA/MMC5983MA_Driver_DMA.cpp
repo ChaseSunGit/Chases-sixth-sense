@@ -5,12 +5,40 @@
 
 #include "MMC5983MA_Driver.h"
 
+// Define the static pointer to allow static ISR functions to access class member data
+MMC5983MA* MMC5983MA::instance = nullptr;
+
 // Constructor
-MMC5983MA::MMC5983MA() 
-            : spi_handle(nullptr), 
+MMC5983MA::MMC5983MA(bool use_rtos, TaskHandle_t sensor_task) 
+            : spi_dma{}, 
               data_holder{}, 
-              new_data_ready(false) {
+              dma_in_progress(false), 
+              new_data_ready(false), 
+              using_RTOS(use_rtos), 
+              SensorTaskHandle(sensor_task) {
     
+      instance = this;
+}
+
+// ISRs
+void IRAM_ATTR MMC5983MA::ISR_dataReady() {
+      if (instance && !instance->dma_in_progress) {
+            if (spi_device_queue_trans(instance->spi_dma.handle, &instance->spi_dma.trans, 0) == ESP_OK) {
+                  instance->dma_in_progress = true;
+            }
+      }
+}
+
+void IRAM_ATTR MMC5983MA::ISR_DMAcomplete_callback(spi_transaction_t *trans) {
+      if (!instance) return;
+      instance->new_data_ready = true;
+      if (instance->using_RTOS) {
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            if (instance->SensorTaskHandle != NULL) {
+                  vTaskNotifyGiveFromISR(instance->SensorTaskHandle, &xHigherPriorityTaskWoken);
+                  portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+            }
+      }
 }
 
 // SPI Register Access
@@ -20,7 +48,7 @@ void MMC5983MA::write_reg(uint8_t reg, uint8_t data) {
       t.length = 16; 
       t.tx_data[0] = (0x00 | (reg & MMC_SPI_ADDR_MASK));
       t.tx_data[1] = data;
-      spi_device_polling_transmit(spi_handle, &t);
+      spi_device_polling_transmit(spi_dma.handle, &t);
 }
 
 uint8_t MMC5983MA::read_reg(uint8_t reg) {
@@ -29,14 +57,8 @@ uint8_t MMC5983MA::read_reg(uint8_t reg) {
       t.length = 16;
       t.tx_data[0] = (MMC_SPI_READ_FLAG | (reg & MMC_SPI_ADDR_MASK));
       t.tx_data[1] = 0x00; 
-      spi_device_polling_transmit(spi_handle, &t);
+      spi_device_polling_transmit(spi_dma.handle, &t);
       return t.rx_data[1];
-}
-
-//MMC needs to clear interrupt after every read
-void MMC5983MA::clear_interrupt() {
-      // Writing a '1' to bit 0 of the STATUS register clears Meas_Done_INT
-      write_reg(MMC_STATUS, MMC_CLEAR_INT);
 }
 
 /**
@@ -103,7 +125,7 @@ bool MMC5983MA::read_config(MMC_Config_t &out_config) {
 /**
  * \brief Reads the device registers to populate the configuration struct.
  */
-void MMC5983MA::parse_config(const MMC_Config_t &config) {
+static void MMC5983MA::parse_config(const MMC_Config_t &config) {
 
       Serial.println("--- MMC5983MA Current Configuration ---");
       
@@ -134,11 +156,9 @@ void MMC5983MA::parse_config(const MMC_Config_t &config) {
 /**
  * \brief Initializes the MMC5983MA into continuous measurement mode with explicit config.
  */
-bool MMC5983MA::init_chip(const MMC_Config_t &config, const MMC_Cal_t &MMC_Cal) {
+bool MMC5983MA::init_chip(const MMC_Config_t &config) {
 
-      is_enabled = config.chip_enable;
-
-      if (!is_enabled){
+      if (!config.chip_enable){
             Serial.println("[MMC] MMC chip disabled");
             return false;
       }
@@ -148,16 +168,20 @@ bool MMC5983MA::init_chip(const MMC_Config_t &config, const MMC_Cal_t &MMC_Cal) 
             return false;
       }
 
-      pinMode(PIN_INT_MMC, INPUT);
+      // Initialize offsets
+      data_holder.offset[0] = 0.0f;
+      data_holder.offset[1] = 0.0f;
+      data_holder.offset[2] = 0.0f;
 
-      data_holder = {};//Empty out any holder value during initialization
-      
-      setCal(MMC_Cal);//Set calibration struct from storage
+      // Initialize identity matrix for soft iron
+      data_holder.W[0][0] = 1.0f; data_holder.W[0][1] = 0.0f; data_holder.W[0][2] = 0.0f;
+      data_holder.W[1][0] = 0.0f; data_holder.W[1][1] = 1.0f; data_holder.W[1][2] = 0.0f;
+      data_holder.W[2][0] = 0.0f; data_holder.W[2][1] = 0.0f; data_holder.W[2][2] = 1.0f;
 
       //Initialize last measurement
       mag_last_measurement[0] = 0;
-      mag_last_measurement[1] = 0;
-      mag_last_measurement[2] = 0;
+      mag_last_measurement[0] = 0;
+      mag_last_measurement[0] = 0;
 
       data_holder.newData = false;//Assume no new data will come in unless proven otherwise
 
@@ -166,8 +190,12 @@ bool MMC5983MA::init_chip(const MMC_Config_t &config, const MMC_Cal_t &MMC_Cal) 
             Serial.println("[MMC-ERROR] SPI host initialization failed!");
             return false;
       }
-      if (!SPI_Add_Device(PIN_CS_MMC, spi_handle)) {
+      if (!SPI_Add_Device(PIN_CS_MMC, ISR_DMAcomplete_callback, spi_dma.handle)) {
             Serial.println("[MMC-ERROR] Could not add MMC Device!");
+            return false;
+      }
+      if (!SPI_Arm_DMA_Channel(MMC_BURST_LEN, ((MMC_XOUT0 & MMC_SPI_ADDR_MASK) | MMC_SPI_READ_FLAG), spi_dma)) {
+            Serial.println("[MMC-ERROR] DMA setup for MMC failed!");
             return false;
       }
 
@@ -224,32 +252,20 @@ bool MMC5983MA::init_chip(const MMC_Config_t &config, const MMC_Cal_t &MMC_Cal) 
  * \brief Unpacks the DMA buffer and applies 18-to-16 bit conversion.
  */
 bool MMC5983MA::single_read() {
-      //First, check the state of the latching interrupt to see if a new data pack is actually available
-      bool int_state = digitalRead(PIN_INT_MMC);
-      if (!int_state || !is_enabled){
-            return false;
-      }//This is used to prevent spending CPU resource on repeat or non-existant mag measurements
-
-      //Load up the rx with address and make a polling read
-      uint8_t tx_buffer[MMC_BURST_LEN] = {0};
-      uint8_t rx_buffer[MMC_BURST_LEN] = {0};
-      tx_buffer[0] = (MMC_XOUT0 & MMC_SPI_ADDR_MASK) | MMC_SPI_READ_FLAG;
-
-      spi_transaction_t t = {};
-      t.length = MMC_BURST_LEN * 8; 
-      t.tx_buffer = tx_buffer;
-      t.rx_buffer = rx_buffer;
-
-      if (spi_device_polling_transmit(spi_handle, &t) != ESP_OK) {
+      spi_transaction_t *r_trans;
+      
+      if (spi_device_get_trans_result(spi_dma.handle, &r_trans, 0) != ESP_OK) {
             return false;
       }
 
-      // The MMC5983MA outputs 18-bit values for X, Y, Z. Data is packed across bytes 1-7 in DMA buffer.
-      uint32_t x_18 = ((uint32_t)rx_buffer[1] << 10) | ((uint32_t)rx_buffer[2] << 2);
-      uint32_t y_18 = ((uint32_t)rx_buffer[3] << 10) | ((uint32_t)rx_buffer[4] << 2);
-      uint32_t z_18 = ((uint32_t)rx_buffer[5] << 10) | ((uint32_t)rx_buffer[6] << 2);
+      dma_in_progress = false;
 
-      uint8_t extra_bits = rx_buffer[7];
+      // The MMC5983MA outputs 18-bit values for X, Y, Z. Data is packed across bytes 1-7 in DMA buffer.
+      uint32_t x_18 = ((uint32_t)spi_dma.rx_buffer[1] << 10) | ((uint32_t)spi_dma.rx_buffer[2] << 2);
+      uint32_t y_18 = ((uint32_t)spi_dma.rx_buffer[3] << 10) | ((uint32_t)spi_dma.rx_buffer[4] << 2);
+      uint32_t z_18 = ((uint32_t)spi_dma.rx_buffer[5] << 10) | ((uint32_t)spi_dma.rx_buffer[6] << 2);
+
+      uint8_t extra_bits = spi_dma.rx_buffer[7];
       x_18 |= (extra_bits >> 6) & 0x03;
       y_18 |= (extra_bits >> 4) & 0x03;
       z_18 |= (extra_bits >> 2) & 0x03;
@@ -260,16 +276,14 @@ bool MMC5983MA::single_read() {
             return false;
       }
 
-      clear_interrupt();//Clear the interrupt so it can pop again. This will only matter if MMC is set as the source of the interrupt
-
       mag_last_measurement[0] = x_18;
       mag_last_measurement[1] = y_18;
       mag_last_measurement[2] = z_18;
 
       // Convert raw 18-bit values to Gauss
-      data_holder.mag[0] = ((float)x_18 - NULL_FIELD_18) / COUNTS_PER_G_18;
-      data_holder.mag[1] = -1.0 * ((float)y_18 - NULL_FIELD_18) / COUNTS_PER_G_18; //Flipping the y axis to correct to right hand coordinate system
-      data_holder.mag[2] = ((float)z_18 - NULL_FIELD_18) / COUNTS_PER_G_18;
+      data_holder.mx = ((float)x_18 - NULL_FIELD_18) / COUNTS_PER_G_18;
+      data_holder.my = -1.0 * ((float)y_18 - NULL_FIELD_18) / COUNTS_PER_G_18; //Flipping the y axis to correct to right hand coordinate system
+      data_holder.mz = ((float)z_18 - NULL_FIELD_18) / COUNTS_PER_G_18;
 
       Apply_Cal_Matrix();
 
@@ -278,14 +292,14 @@ bool MMC5983MA::single_read() {
 
 void MMC5983MA::Apply_Cal_Matrix() {
       // Subtract hard-iron centroid offset
-      float dx = data_holder.mag[0] - calibration_const.offset[0];
-      float dy = data_holder.mag[1] - calibration_const.offset[1];
-      float dz = data_holder.mag[2] - calibration_const.offset[2];
+      float dx = data_holder.mx - data_holder.offset[0];
+      float dy = data_holder.my - data_holder.offset[1];
+      float dz = data_holder.mz - data_holder.offset[2];
 
       // Multiply by soft-iron correction tensor W
-      data_holder.mag_cal[0] = calibration_const.w[0][0] * dx + calibration_const.w[0][1] * dy + calibration_const.w[0][2] * dz;
-      data_holder.mag_cal[1] = calibration_const.w[1][0] * dx + calibration_const.w[1][1] * dy + calibration_const.w[1][2] * dz;
-      data_holder.mag_cal[2] = calibration_const.w[2][0] * dx + calibration_const.w[2][1] * dy + calibration_const.w[2][2] * dz;
+      data_holder.mx_cal = data_holder.W[0][0] * dx + data_holder.W[0][1] * dy + data_holder.W[0][2] * dz;
+      data_holder.my_cal = data_holder.W[1][0] * dx + data_holder.W[1][1] * dy + data_holder.W[1][2] * dz;
+      data_holder.mz_cal = data_holder.W[2][0] * dx + data_holder.W[2][1] * dy + data_holder.W[2][2] * dz;
 }
 
 // --------------------------------------------------------------------------
@@ -372,18 +386,18 @@ bool MMC5983MA::MatrixSqrt3x3(const float M[3][3], float W[3][3]) {
 }
 
 size_t MMC5983MA::MMC_Read_Block(uint8_t block_seconds, std::vector<float>& x_out, std::vector<float>& y_out, std::vector<float>& z_out) {
-      if (ODR <= 0) return 0;
+      if (data_holder.reportFrequency <= 0) return 0;
 
-      size_t target_samples = (size_t)block_seconds * ODR;
+      size_t target_samples = (size_t)block_seconds * data_holder.reportFrequency;
       size_t samples_read = 0;
 
       while (samples_read < target_samples) {
             if (new_data_ready) {
                   new_data_ready = false;
                   if (single_read()) {
-                        x_out.push_back(data_holder.mag[0]);
-                        y_out.push_back(data_holder.mag[1]);
-                        z_out.push_back(data_holder.mag[2]);
+                        x_out.push_back(data_holder.mx);
+                        y_out.push_back(data_holder.my);
+                        z_out.push_back(data_holder.mz);
                         samples_read++;
                   }
             }
@@ -451,13 +465,13 @@ bool MMC5983MA::Evaluate_Calibration_Quality(const std::vector<float>& raw_x, co
  */
 bool MMC5983MA::Calibrate_Full_Soft_Hard_Iron(uint8_t num_seconds, uint8_t num_timeout) {
       //Reset calibration
-      calibration_const.offset[0] = 0.0f;
-      calibration_const.offset[1] = 0.0f;
-      calibration_const.offset[2] = 0.0f;
+      data_holder.offset[0] = 0.0f;
+      data_holder.offset[1] = 0.0f;
+      data_holder.offset[2] = 0.0f;
 
-      calibration_const.w[0][0] = 1.0f; calibration_const.w[0][1] = 0.0f; calibration_const.w[0][2] = 0.0f;
-      calibration_const.w[1][0] = 0.0f; calibration_const.w[1][1] = 1.0f; calibration_const.w[1][2] = 0.0f;
-      calibration_const.w[2][0] = 0.0f; calibration_const.w[2][1] = 0.0f; calibration_const.w[2][2] = 1.0f;
+      data_holder.W[0][0] = 1.0f; data_holder.W[0][1] = 0.0f; data_holder.W[0][2] = 0.0f;
+      data_holder.W[1][0] = 0.0f; data_holder.W[1][1] = 1.0f; data_holder.W[1][2] = 0.0f;
+      data_holder.W[2][0] = 0.0f; data_holder.W[2][1] = 0.0f; data_holder.W[2][2] = 1.0f;
 
       if (num_seconds == 0) num_seconds = 3;
       if (num_timeout < num_seconds) num_timeout = num_seconds;
@@ -523,8 +537,8 @@ bool MMC5983MA::Calibrate_Full_Soft_Hard_Iron(uint8_t num_seconds, uint8_t num_t
             if (!MatrixSqrt3x3(M, cand_W)) continue;
 
             if (Evaluate_Calibration_Quality(all_x, all_y, all_z, cand_offset, cand_W)) {
-                  memcpy(calibration_const.offset, cand_offset, sizeof(cand_offset));
-                  memcpy(calibration_const.w, cand_W, sizeof(cand_W));
+                  memcpy(data_holder.offset, cand_offset, sizeof(cand_offset));
+                  memcpy(data_holder.W, cand_W, sizeof(cand_W));
                   is_good_calibration = true;
                   Serial.printf("[MMC] Calibration converged successfully with %u samples!\n", (unsigned)total_samples);
                   break;

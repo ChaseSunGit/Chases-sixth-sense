@@ -8,16 +8,60 @@
 // INCLUDES
 #include "ICM42607_Driver.h"
 
+// Define the static pointer to allow static ISR functions to access class member data
+ICM42607* ICM42607::instance = nullptr;
+
 // Constructor initializing variables and binding the static instance pointer
-ICM42607::ICM42607() 
-            : spi_handle(nullptr),
-              data_holder{}, 
-              calibration_constant{};
-              new_data_ready(false)  {
-      
+ICM42607::ICM42607(bool use_rtos, TaskHandle_t sensor_task) 
+            : spi_dma{},
+              data_holder{},
+              dma_in_progress(false), 
+              new_data_ready(false), 
+              IMU_first_read(false), 
+              using_RTOS(use_rtos), 
+              SensorTaskHandle(sensor_task) {
+
+      instance = this;
 }
 
 // FUNCTIONS
+
+//First two functions are a pair of quick ISR functions for data ready & DMA complete
+
+//ISR for data ready interrupt from chip
+void IRAM_ATTR ICM42607::ISR_dataReady() {
+      if (instance && !instance->dma_in_progress) {//If the object exists and if dma is not currently in progress
+            // Queue the pre-armed DMA transaction with zero tick delay
+            if (spi_device_queue_trans(instance->spi_dma.handle, &instance->spi_dma.trans, 0) == ESP_OK) {
+                  instance->dma_in_progress = true;
+            }
+      }
+
+      //Triggers MMC read
+      if (!dma_in_progress_MMC) {
+            if (spi_device_queue_trans(SPI_DMA_MMC.handle, &SPI_DMA_MMC.trans, 0) == ESP_OK) {
+                  dma_in_progress_MMC = true;
+            }
+      }
+}
+
+
+//Call back function when DMA completes transfer and for triggering data processing & communication
+//RTOS version where an external sensor task handle is notified
+void IRAM_ATTR ICM42607::ISR_DMAcomplete_callback(spi_transaction_t *trans) {
+      if (!instance) return;
+      instance->new_data_ready = true; // Raise flag for buffer full
+      if (instance->using_RTOS){
+            // Wake up the RTOS task
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            if (instance->SensorTaskHandle != NULL) {
+                  vTaskNotifyGiveFromISR(instance->SensorTaskHandle, &xHigherPriorityTaskWoken);//This function checks if sensor task has higher priority than current task during isr firing
+                  //If that is the case (should be in almost all cases as the sensor task is very high priority), the function will set the boolean to pdTrue
+                  //Then, the ISR will exit and the sensor reading task is immediately executed before the current task is finished executing.
+                  portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+            }
+      }
+}
 
 /**
  * \brief Tool to write SPI command to a register
@@ -29,14 +73,14 @@ ICM42607::ICM42607()
 void ICM42607::write_reg(uint8_t reg, uint8_t data) {
       spi_transaction_t t = {};
       t.flags = SPI_TRANS_USE_TXDATA;
-      t.length = 16; //16 bits, 1 byte address + 1 byte data
+      t.length = 16; //Two bytes
       t.tx_data[0] = reg;
       t.tx_data[1] = data;
-      spi_device_polling_transmit(spi_handle, &t);
+      spi_device_polling_transmit(spi_dma.handle, &t);
 }
 
 /**
- * \brief Tool to read SPI register. This only reads 1 register for checking config.
+ * \brief Tool to read SPI register. This only reads 1 register for checking config. Do not use this to read actual Accel/Gyro/Mag data as its too slow
  *
  * \param reg //The SPI register to write to
  * \return
@@ -44,10 +88,10 @@ void ICM42607::write_reg(uint8_t reg, uint8_t data) {
 uint8_t ICM42607::read_reg(uint8_t reg) {
       spi_transaction_t t = {};
       t.flags = SPI_TRANS_USE_TXDATA | SPI_TRANS_USE_RXDATA;
-      t.length = 16;//16 bits, 1 byte address + 1 byte data
+      t.length = 16;
       t.tx_data[0] = reg | SPI_READ_FLAG;
       t.tx_data[1] = 0x00; //send 0s so the read is valid
-      spi_device_polling_transmit(spi_handle, &t);
+      spi_device_polling_transmit(spi_dma.handle, &t);
       return t.rx_data[1];
 }
 
@@ -57,12 +101,10 @@ uint8_t ICM42607::read_reg(uint8_t reg) {
  * \param ICM_Config configuration struct, consult ICM42607_Driver.h for details on config fields
  * \return boolean value true meaning successfully initialized and false failed
  */
-bool ICM42607::init_chip(const ICM_Config_t &ICM_Config, const ICM_Cal_t &ICM_Cal) {
-
-      is_enabled = ICM_Config.chip_enable;
+bool ICM42607::init_chip(const ICM_Config_t &ICM_Config) {
 
       //Check if chip is enabled
-      if (!is_enabled){
+      if (!ICM_Config.chip_enable){
             Serial.println("[ICM] ICM chip disabled");
             return false;
       }
@@ -72,11 +114,9 @@ bool ICM42607::init_chip(const ICM_Config_t &ICM_Config, const ICM_Cal_t &ICM_Ca
             return 0;
       }
 
-      pinMode(PIN_INT_ICM, INPUT);//Set the mode of the interrupt pin
+      
 
       data_holder = {};//Empty out any holder value during initialization
-      
-      setCal(ICM_Cal);//Set calibration struct from storage
 
       //First setup the SPI bus
 
@@ -87,11 +127,16 @@ bool ICM42607::init_chip(const ICM_Config_t &ICM_Config, const ICM_Cal_t &ICM_Ca
       }
 
       // Add the specific SPI device
-      if (!SPI_Add_Device(PIN_CS_ICM, spi_handle)) {
+      if (!SPI_Add_Device(PIN_CS_ICM, ISR_DMAcomplete_callback, spi_dma.handle)) {
             Serial.println("[ICM-ERROR] Could not add ICM Device!");
             return 0;
       }
 
+      // Initialize the SPI bus
+      if (!SPI_Arm_DMA_Channel(ICM_BURST_LEN, (DATA_START_ICM  | SPI_READ_FLAG), spi_dma)) {
+            Serial.println("[ICM-ERROR] DMA setup for ICM failed!");
+            return 0;
+      }
 
       //For configuration, we do 7 steps
       //1. set filter bandwidth
@@ -111,9 +156,9 @@ bool ICM42607::init_chip(const ICM_Config_t &ICM_Config, const ICM_Cal_t &ICM_Ca
       ODR = odr_table[ICM_Config.outputRate - 1];//index from 0
 
       uint8_t accel_range = (4 - ICM_Config.accel_range); //Accel full scale ranges from 0 (±16g) to 3 (±2g) left shifted 5 bits on ACCEL_CONFIG0
-      accel_conversion = ACCEL_LSB_PER_G[accel_range];
+      data_holder.accel_conversion = ACCEL_LSB_PER_G[accel_range];
       uint8_t gyro_range = (4 - ICM_Config.gyro_range); //Gyro full scale ranges from 0 (±2000dps) to 3 (±250dps) left shifted 5 bits on GYRO_CONFIG0
-      gyro_conversion = GYRO_LSB_PER_DPS[gyro_range];
+      data_holder.gyro_conversion = GYRO_LSB_PER_DPS[gyro_range];
 
       uint8_t accel_bw = 8 - ICM_Config.accel_bw; //Bandwidth goes from 1 (180Hz) to 7 (16Hz) with 0 being no filter on Accel_CONFIG1
       uint8_t gyro_bw = 8 - ICM_Config.gyro_bw; //same as accel
@@ -224,23 +269,14 @@ bool ICM42607::read_config(ICM_Config_t &out_config) {
       out_config.accel_bw = 8 - (accel_conf1 & 0x07);
       out_config.gyro_bw  = 8 - (gyro_conf1 & 0x07);
 
-      out_config.chip_enable = is_enabled;
-
       parse_config(out_config);
 
       return true;
 }
 
-void ICM42607::parse_config(const ICM_Config_t &config) {
+static void ICM42607::parse_config(const ICM_Config_t &config) {
 
       Serial.println("--- ICM-42607 Current Configuration ---");
-
-      if (config.chip_enable){
-            Serial.println("ICM enabled");
-      }
-      else{
-            Serial.println("ICM disabled, will not output data");
-      }
 
       // Output Data Rate
       if (config.outputRate >= 1 && config.outputRate <= 8) {
@@ -286,55 +322,43 @@ void ICM42607::parse_config(const ICM_Config_t &config) {
  * \return boolean whether read was successful
  */
 bool ICM42607::single_read(){
-      if (!is_enabled){
-            return false;
-      }//Do not attempt spi read if chip is disabled
 
-      new_data_ready = false; //Clear the data ready flag
+      spi_transaction_t *r_trans;
 
-      //Load up the rx with address and make a polling read
-      uint8_t tx_buffer[ICM_BURST_LEN] = {0};
-      uint8_t rx_buffer[ICM_BURST_LEN] = {0};
-      tx_buffer[0] = DATA_START_ICM | SPI_READ_FLAG;
-
-      spi_transaction_t t = {};
-      t.length = ICM_BURST_LEN * 8; 
-      t.tx_buffer = tx_buffer;
-      t.rx_buffer = rx_buffer;
-
-      if (spi_device_polling_transmit(spi_handle, &t) != ESP_OK) {
+      if (spi_device_get_trans_result(spi_dma.handle, &r_trans, 0) != ESP_OK) {
             return false;
       }
+
+      dma_in_progress = false;
       
       // Make the read
 
       // Unpack raw 16-bit values
-      int16_t temp_raw = (int16_t)((rx_buffer[1]  << 8) | rx_buffer[2]);
+      int16_t temp_raw = (int16_t)((spi_dma.rx_buffer[1]  << 8) | spi_dma.rx_buffer[2]);
 
       data_holder.temp  = ((float)temp_raw / 128.0f) + 25.0f;
 
       int16_t accel_raw[3];
       int16_t gyro_raw[3];
       
-      accel_raw[0] = (int16_t)((rx_buffer[3]  << 8) | rx_buffer[4]);
-      accel_raw[1] = (int16_t)((rx_buffer[5]  << 8) | rx_buffer[6]);
-      accel_raw[2] = (int16_t)((rx_buffer[7]  << 8) | rx_buffer[8]);
+      accel_raw[0] = (int16_t)((spi_dma.rx_buffer[3]  << 8) | spi_dma.rx_buffer[4]);
+      accel_raw[1] = (int16_t)((spi_dma.rx_buffer[5]  << 8) | spi_dma.rx_buffer[6]);
+      accel_raw[2] = (int16_t)((spi_dma.rx_buffer[7]  << 8) | spi_dma.rx_buffer[8]);
       
-      gyro_raw[0] = (int16_t)((rx_buffer[9]  << 8) | rx_buffer[10]);
-      gyro_raw[1] = (int16_t)((rx_buffer[11] << 8) | rx_buffer[12]);
-      gyro_raw[2] = (int16_t)((rx_buffer[13] << 8) | rx_buffer[14]);
+      gyro_raw[0] = (int16_t)((spi_dma.rx_buffer[9]  << 8) | spi_dma.rx_buffer[10]);
+      gyro_raw[1] = (int16_t)((spi_dma.rx_buffer[11] << 8) | spi_dma.rx_buffer[12]);
+      gyro_raw[2] = (int16_t)((spi_dma.rx_buffer[13] << 8) | spi_dma.rx_buffer[14]);
 
       //Convert accel and gyro values with scaling
 
       for (int i = 0; i < 3; i++){
-            data_holder.accel[i] = accel_raw[i] / accel_conversion; //reading Gs
-            data_holder.gyro[i] = gyro_raw[i] / gyro_conversion; //reading dps
+            data_holder.accel[i] = accel_raw[i] / data_holder.accel_conversion; //reading Gs
+            data_holder.gyro[i] = gyro_raw[i] / data_holder.gyro_conversion; //reading dps
       }
       
       //Apply calibration
       apply_calibration();
       //Optional, apply temp correction
-      temp_correct();
 
       return true;
 }
@@ -345,8 +369,8 @@ bool ICM42607::single_read(){
  */
 void ICM42607::apply_calibration(){
       for (int i = 0; i < 3; i++){
-            data_holder.accel_cal[i] = data_holder.accel[i] - calibration_const.accel_offset[i];
-            data_holder.gyro_cal[i] = data_holder.gyro[i] - calibration_const.gyro_offset[i];
+            data_holder.accel_cal[i] = data_holder.accel[i] - data_holder.accel_offset[i];
+            data_holder.gyro_cal[i] = data_holder.gyro[i] - data_holder.gyro_offset[i];
       }
 }
 
@@ -378,9 +402,9 @@ void ICM42607::temp_correct() {
  */
 bool ICM42607::accel_calib(int num_samples){
 
-      calibration_const.accel_offset[0] = 0;
-      calibration_const.accel_offset[1] = 0;
-      calibration_const.accel_offset[2] = 0;//Zero all offsets to generate new set
+      data_holder.accel_offset[0] = 0;
+      data_holder.accel_offset[1] = 0;
+      data_holder.accel_offset[2] = 0;//Zero all offsets to generate new set
 
       float ax_avg = 0;
       float ay_avg = 0;
@@ -403,11 +427,11 @@ bool ICM42607::accel_calib(int num_samples){
       }
       //Now that the requsite samples are collected, average the offsets
       
-      calibration_const.accel_offset[0] = ax_avg/((float)sample_count);
-      calibration_const.accel_offset[1] = ay_avg/((float)sample_count);
-      calibration_const.accel_offset[2] = az_avg/((float)sample_count) - 9.81; //Subtract the gravity vector
+      data_holder.accel_offset[0] = ax_avg/((float)sample_count);
+      data_holder.accel_offset[1] = ay_avg/((float)sample_count);
+      data_holder.accel_offset[2] = az_avg/((float)sample_count) - 9.81; //Subtract the gravity vector
 
-      Serial.printf("[ICM] IMU accel offsets: x: %.4f, y: %.4f, z: %.4f\n", calibration_const.accel_offset[0],calibration_const.accel_offset[1],calibration_const.accel_offset[2]);    
+      Serial.printf("[ICM] IMU accel offsets: x: %.4f, y: %.4f, z: %.4f\n", data_holder.accel_offset[0],data_holder.accel_offset[1],data_holder.accel_offset[2]);    
 
       Serial.println("[ICM] Accel calibration complete!");
 
@@ -419,9 +443,9 @@ bool ICM42607::accel_calib(int num_samples){
  * \return success of calibration
  */
 bool ICM42607::gyro_calib(int num_samples){
-      calibration_const.gyro_offset[0] = 0;
-      calibration_const.gyro_offset[1] = 0;
-      calibration_const.gyro_offset[2] = 0;//Zero all offsets to generate new set
+      data_holder.gyro_offset[0] = 0;
+      data_holder.gyro_offset[1] = 0;
+      data_holder.gyro_offset[2] = 0;//Zero all offsets to generate new set
 
       float gx_avg = 0;
       float gy_avg = 0;
@@ -443,11 +467,11 @@ bool ICM42607::gyro_calib(int num_samples){
       }
       //Now that the requsite samples are collected, average the offsets
       
-      calibration_const.gyro_offset[0] = gx_avg/((float)sample_count);
-      calibration_const.gyro_offset[1] = gy_avg/((float)sample_count);
-      calibration_const.gyro_offset[2] = gz_avg/((float)sample_count);
+      data_holder.gyro_offset[0] = gx_avg/((float)sample_count);
+      data_holder.gyro_offset[1] = gy_avg/((float)sample_count);
+      data_holder.gyro_offset[2] = gz_avg/((float)sample_count);
 
-      Serial.printf("[ICM] gyro offsets: x: %.4f, y: %.4f, z: %.4f\n", calibration_const.gyro_offset[0],calibration_const.gyro_offset[1],calibration_const.gyro_offset[2]);    
+      Serial.printf("[ICM] gyro offsets: x: %.4f, y: %.4f, z: %.4f\n", data_holder.gyro_offset[0],data_holder.gyro_offset[1],data_holder.gyro_offset[2]);    
 
       Serial.println("[ICM] Gyro calibration complete!");
 

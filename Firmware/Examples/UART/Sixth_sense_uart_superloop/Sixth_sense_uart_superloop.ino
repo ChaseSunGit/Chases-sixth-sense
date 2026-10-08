@@ -1,83 +1,44 @@
-#include "ICM42607_Driver.h"
-#include "MMC5983MA_Driver.h"
+#include <Arduino.h>
+#include "SixthSense_IMU.h"
 
-TaskHandle_t SensorTaskHandle = NULL;
-//Temporary boolean for RTOS vs superloop mode
-bool using_RTOS = false;
+SixthSense_IMU imu;
 
-void setup(void) {
-      Serial.setTxBufferSize(1024); // Expand TX ring buffer to 1KB to avoid dropping serial buffers
-      Serial.begin(921600);
-      unsigned long start = millis();
-      while (!Serial && (millis() - start < 3000)) {
-            delay(10);
-      }
-      Serial.println("[General] Beginning initialization process");
+void setup() {
+    Serial.begin(115200);
+    while (!Serial) delay(10);
 
+    // 1. Get configurations
+    ICM_Config_t icm_cfg;
+    MMC_Config_t mmc_cfg;
+    Fusion_Config_t fusion_cfg;
+    imu.returnDefaultConfig(icm_cfg, mmc_cfg, fusion_cfg);
 
-      // Initialize ICM with all relevant settings
-      
-      if (!ICM_init_chip(2)) {
-            Serial.println("[ICM] ICM initialization failed!");
-            return;
-      }
-      else{
-            Serial.println("[ICM] ICM initialization success!");
-      }
+    // 2. Initialize Hardware
+    if (!imu.sensor_init(icm_cfg, mmc_cfg, fusion_cfg)) {
+        Serial.println("IMU Init Failed!");
+        while (1) delay(100);
+    }
 
+    // 3. Calibrate (works flawlessly because flags are propagated and task isn't blocking bus)
+    Serial.println("Calibrating IMU...");
+    imu.calibrateAccel(200);
+    imu.calibrateGyro(200);
 
-      // Initialize ICM with all relevant settings
-      
-      if (!MMC_init_chip(6)) {
-            Serial.println("[MMC] MMC initialization failed!");
-            return;
-      }
-      else{
-            Serial.println("[MMC] MMC initialization success!");
-      }
-      
-
-      pinMode(PIN_INT_ICM, INPUT);
-      attachInterrupt(digitalPinToInterrupt(PIN_INT_ICM), ICM_ISR_dataReady, RISING);
-      
-      int pinState = digitalRead(PIN_INT_MMC); 
-      Serial.println("[ICM] Interrupt set for ICM42607");
-      Serial.println("[ICM] Calibrating accelerometer");
-      //ICM_accel_calib(200);
-      Serial.println("[ICM] Calibrating gyroscope");
-      //ICM_gyro_calib(200);
-      Serial.println("[MMC] Calibrating magnetometer - move sensor in figure 8 pattern");
-      Calibrate_Full_Soft_Iron();
-
-      Serial.println("[General] Ready to collect data:");
-      Serial.printf("[MMC] Mag calib offset: x %.4f\ty %.4f\tz %.4f\n",MMC_Data_Holder.offset[0], MMC_Data_Holder.offset[1], MMC_Data_Holder.offset[2]);
-      Serial.printf("[MMC] Mag calib matrix:\n%.4f\t%.4f\t%.4f\n",MMC_Data_Holder.W[0][0], MMC_Data_Holder.W[0][1], MMC_Data_Holder.W[0][2]);
-      Serial.printf("%.4f\t%.4f\t%.4f\n",MMC_Data_Holder.W[1][0], MMC_Data_Holder.W[1][1], MMC_Data_Holder.W[1][2]);
-      Serial.printf("%.4f\t%.4f\t%.4f\n",MMC_Data_Holder.W[2][0], MMC_Data_Holder.W[2][1], MMC_Data_Holder.W[2][2]);
+    // 4. Fire up the RTOS task natively from the object
+    if (!imu.startRTOS_Task(1, 5)) {
+        Serial.println("Failed to start IMU Task!");
+    } else {
+        Serial.println("IMU RTOS Task Running.");
+    }
 }
 
 void loop() {
-      // Check if new data has arrived from the DMA engine
-      if (new_data_ready_ICM) {
-            new_data_ready_ICM = false;
-
-            // Drain the completed transaction from the SPI driver queue to free the hardware
-            ICM_single_read();
-            //Serial.printf("ICM Data: %.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\n",ICM_Data_Holder.ax,ICM_Data_Holder.ay,ICM_Data_Holder.az,ICM_Data_Holder.gx,ICM_Data_Holder.gy,ICM_Data_Holder.gz);
-            
-            //Serial.printf("MAG pin state %d\n",digitalRead(PIN_INT_MMC));
-            //Serial.printf("%.4f,%.4f\n",ICM_Data_Holder.roll,ICM_Data_Holder.pitch);
-            
-
-      }
-
-      if (new_data_ready_MMC) {
-            new_data_ready_MMC = false;
-
-            // Drain the completed transaction from the SPI driver queue to free the hardware
-            MMC_single_read();
-            //Serial.printf("ICM Data: %.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\n",ICM_Data_Holder.ax,ICM_Data_Holder.ay,ICM_Data_Holder.az,ICM_Data_Holder.gx,ICM_Data_Holder.gy,ICM_Data_Holder.gz);
-            Serial.printf("MMC Data: %.4f\t%.4f\t%.4f\n",MMC_Data_Holder.mx,MMC_Data_Holder.my,MMC_Data_Holder.mz);
-            
-      }
+    // You can safely read data here from the wrapper whenever you want
+    Fusion_Data_t fd = imu.getFusionData();
+    Serial.printf("accel x: %.4f\ty: %.4f\tz: %.4f\n", fd.accel[0], fd.accel[1], fd.accel[2]);
+    Serial.printf("gyro  x: %.4f\ty: %.4f\tz: %.4f\n", fd.gyro[0], fd.gyro[1], fd.gyro[2]);
+    Serial.printf("mag   x: %.4f\ty: %.4f\tz: %.4f\n", fd.mag[0], fd.mag[1], fd.mag[2]);
+    Serial.printf("Roll: %.4f\tPitch:\t%.4f\tYaw: %.4f\n", fd.roll, fd.pitch, fd.yaw);
+    
+    vTaskDelay(pdMS_TO_TICKS(1)); // Print at up to 1000hz
 }

@@ -12,7 +12,7 @@
 #include <vector>
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
-#include "SixthSense_SPI.h"
+#include "Sixth_sense_SPI.h"
 
 // CONSTANTS/MACROS
 #define MMC_BURST_LEN   8
@@ -44,18 +44,14 @@
 
 #define MMC_SPI_READ_FLAG 0x80 
 #define MMC_SPI_ADDR_MASK 0x3F 
-#define MMC_CLEAR_INT   0x01
 
 // STRUCTURES
 struct MMC_Data_t {
       float mag[3];
+      float offset[3];
+      float W[3][3];
       float mag_cal[3];
       bool newData;//Boolean to determine if the new data being read in is new or a repeat read of the old data
-};
-
-struct MMC_Cal_t {
-      float offset[3];
-      float w[3][3];
 };
 
 struct MMC_Config_t {
@@ -67,30 +63,28 @@ struct MMC_Config_t {
 
 class MMC5983MA {
 public:
-      MMC5983MA();
+      MMC5983MA(bool use_rtos, TaskHandle_t sensor_task);
 
       // Configuration tools
       bool read_config(MMC_Config_t &out_config);
       bool check_config_validity(const MMC_Config_t &config);
-      static void parse_config(const MMC_Config_t &config);
+      static bool parse_config(const MMC_Config_t &config);
 
       //Initialization
       bool init_chip(const MMC_Config_t &config);
       //Single read
       bool single_read();
-      //Used to clear interrupt
-      void clear_interrupt();
       
       // Calibration
       bool Calibrate_Full_Soft_Hard_Iron(uint8_t num_seconds = 6, uint8_t num_timeout = 30);
-      ICM_Cal_t getCal() const {return calibration_const;}
-      void setCal(const MMC_Cal_t &cal_const) {calibration_const = cal_const};
       
       MMC_Data_t getData() const { return data_holder; }
-      float getODR() const { return ODR; }
-
-      //Force a data ready without interrupt - used for calibration
+      float getODR() const {return ODR;}
       void force_data_ready() { new_data_ready = true; }
+
+      static MMC5983MA* instance;
+      static void IRAM_ATTR ISR_dataReady();
+      static void IRAM_ATTR ISR_DMAcomplete_callback(spi_transaction_t *trans);
 
       static constexpr int freq_table[7] = { 1, 10, 20, 50, 100, 200, 1000 };
       static constexpr int bw_hz_table[4] = { 100, 200, 400, 800 };
@@ -98,10 +92,6 @@ public:
       static constexpr int set_samples_table[8] = { 1, 25, 75, 100, 250, 500, 1000, 2000 };
 
 private:
-      //SPI functions
-      void write_reg(uint8_t reg, uint8_t data);
-      uint8_t read_reg(uint8_t reg);
-
       void Apply_Cal_Matrix();
 
       // Internal Math / Calibration Helpers
@@ -111,15 +101,15 @@ private:
       size_t MMC_Read_Block(uint8_t block_seconds, std::vector<float>& x_out, std::vector<float>& y_out, std::vector<float>& z_out);
       bool Evaluate_Calibration_Quality(const std::vector<float>& raw_x, const std::vector<float>& raw_y, const std::vector<float>& raw_z, const float offset[3], const float W[3][3]);
 
-      bool is_enabled;//Chip enabled flag
-
-      volatile bool new_data_ready;
-
-      spi_device_handle_t spi_handle;
+      SPI_DMA_Channel spi_dma;
       MMC_Data_t data_holder;
-      MMC_Cal_t calibration_const;
       
       int ODR; //output data rate
+
+      volatile bool dma_in_progress;
+      volatile bool new_data_ready;
+      bool using_RTOS;
+      TaskHandle_t SensorTaskHandle;
 
       uint32_t mag_last_measurement[3];//Used to track if a new measurement is made by seeing if it is the same as the last measurement
 };

@@ -9,7 +9,7 @@
 #include <Arduino.h>
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
-#include "SixthSense_SPI.h"
+#include "Sixth_sense_SPI.h"
 #include "MMC5983MA_Driver.h" 
 
 // Constants / Macros
@@ -38,18 +38,17 @@
 
 #define SPI_READ_FLAG       0x80 
 
-//Structures
+
 struct ICM_Data_t {
       float temp; 
-      float accel[3]; 
-      float accel_cal[3]; 
-      float gyro[3];
-      float gyro_cal[3];
-};
 
-struct ICM_Cal_t {
-      float accel_offset[3];
+      float accel[3]; 
+      float accel_offset[3]; 
+      float accel_cal[3]; 
+
+      float gyro[3];
       float gyro_offset[3];
+      float gyro_cal[3];
 };
 
 struct ICM_Config_t {
@@ -64,7 +63,7 @@ struct ICM_Config_t {
 class ICM42607 {
 public:
       //Constructor
-      ICM42607();
+      ICM42607(bool use_rtos, TaskHandle_t sensor_task);
 
       //Config helper tools
       bool read_config(ICM_Config_t &out_config);
@@ -81,20 +80,23 @@ public:
       void apply_calibration();
 
       //Apply temp correction
-      void temp_correct();
+      void temp_correct(float accel_temp_coeff[3], float gyro_temp_coeff[3]);
       
       //Sensor individual calibration
       bool accel_calib(int num_samples = 200);//Calibrated once and then store
       bool gyro_calib(int num_samples = 200);//Calibrate at every startup
-      ICM_Cal_t getCal() const {return calibration_const;}
-      void setCal(const ICM_Cal_t &cal_const) {calibration_const = cal_const};
 
       //Get data for external reads
       ICM_Data_t getData() const { return data_holder;} 
       float getODR() const {return ODR;}
 
-      //Force a data ready without interrupt - used for calibration
+      //Force a data ready without interrupt
       void force_data_ready() {new_data_ready = true;}//Function to force a read by artificially raising the data ready flag
+
+      static ICM42607* instance; //For reference with the ISR callback
+      //ISR and DMA callback for reads
+      static void IRAM_ATTR ISR_dataReady();
+      static void IRAM_ATTR ISR_DMAcomplete_callback(spi_transaction_t *trans);
 
       static constexpr float odr_table[8] = {12.5f, 25.0f, 50.0f, 100.0f, 200.0f, 400.0f, 800.0f, 1600.0f};
       static constexpr int bw_table[8] = {16, 25, 34, 53, 73, 121, 180, 0};
@@ -107,18 +109,17 @@ private:
       void write_reg(uint8_t reg, uint8_t data);
       uint8_t read_reg(uint8_t reg);
 
-      //Chip enable
-      bool is_enabled;
-
-      //SPI handle
-      spi_device_handle_t spi_handle;
+      //DMA channel for ICM
+      SPI_DMA_Channel spi_dma;
 
       //Private data holder
       ICM_Data_t data_holder;
-      ICM_Cal_t calibration_const;
       
       //Booleans for handling data ready
+      volatile bool dma_in_progress;
       volatile bool new_data_ready;
+      bool using_RTOS;
+      TaskHandle_t SensorTaskHandle;
 
       //Internal stored config values
       int ODR; //output data rate
