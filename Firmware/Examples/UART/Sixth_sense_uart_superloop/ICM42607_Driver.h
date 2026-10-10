@@ -84,10 +84,10 @@ public:
       void temp_correct();
       
       //Sensor individual calibration
-      bool accel_calib(int num_samples = 200);//Calibrated once and then store
-      bool gyro_calib(int num_samples = 200);//Calibrate at every startup
+      bool accel_calib(int num_samples = 2000);//Calibrated once and then store
+      bool gyro_calib(int num_samples = 2000);//Calibrate at every startup
       ICM_Cal_t getCal() const {return calibration_const;}
-      void setCal(const ICM_Cal_t &cal_const) {calibration_const = cal_const};
+      void setCal(const ICM_Cal_t &cal_const) {calibration_const = cal_const;}
 
       //Get data for external reads
       ICM_Data_t getData() const { return data_holder;} 

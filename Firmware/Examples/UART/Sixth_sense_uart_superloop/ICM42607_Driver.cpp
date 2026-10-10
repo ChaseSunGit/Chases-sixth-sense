@@ -12,7 +12,7 @@
 ICM42607::ICM42607() 
             : spi_handle(nullptr),
               data_holder{}, 
-              calibration_constant{};
+              calibration_const{},
               new_data_ready(false)  {
       
 }
@@ -57,7 +57,7 @@ uint8_t ICM42607::read_reg(uint8_t reg) {
  * \param ICM_Config configuration struct, consult ICM42607_Driver.h for details on config fields
  * \return boolean value true meaning successfully initialized and false failed
  */
-bool ICM42607::init_chip(const ICM_Config_t &ICM_Config, const ICM_Cal_t &ICM_Cal) {
+bool ICM42607::init_chip(const ICM_Config_t &ICM_Config) {
 
       is_enabled = ICM_Config.chip_enable;
 
@@ -76,10 +76,6 @@ bool ICM42607::init_chip(const ICM_Config_t &ICM_Config, const ICM_Cal_t &ICM_Ca
 
       data_holder = {};//Empty out any holder value during initialization
       
-      setCal(ICM_Cal);//Set calibration struct from storage
-
-      //First setup the SPI bus
-
       // Initialize the SPI bus
       if (!SPI_Bus_Init(PIN_MOSI_ICM, PIN_MISO_ICM, PIN_SCLK_ICM)) {
             Serial.println("[ICM-ERROR] SPI host initialization failed!");
@@ -378,6 +374,8 @@ void ICM42607::temp_correct() {
  */
 bool ICM42607::accel_calib(int num_samples){
 
+      Serial.println("Accelerometer calibration started");
+
       calibration_const.accel_offset[0] = 0;
       calibration_const.accel_offset[1] = 0;
       calibration_const.accel_offset[2] = 0;//Zero all offsets to generate new set
@@ -405,7 +403,7 @@ bool ICM42607::accel_calib(int num_samples){
       
       calibration_const.accel_offset[0] = ax_avg/((float)sample_count);
       calibration_const.accel_offset[1] = ay_avg/((float)sample_count);
-      calibration_const.accel_offset[2] = az_avg/((float)sample_count) - 9.81; //Subtract the gravity vector
+      calibration_const.accel_offset[2] = az_avg/((float)sample_count) - 1.0f; //Subtract the gravity vector in g
 
       Serial.printf("[ICM] IMU accel offsets: x: %.4f, y: %.4f, z: %.4f\n", calibration_const.accel_offset[0],calibration_const.accel_offset[1],calibration_const.accel_offset[2]);    
 
@@ -419,6 +417,9 @@ bool ICM42607::accel_calib(int num_samples){
  * \return success of calibration
  */
 bool ICM42607::gyro_calib(int num_samples){
+
+      Serial.println("Gyroscope calibration started");
+
       calibration_const.gyro_offset[0] = 0;
       calibration_const.gyro_offset[1] = 0;
       calibration_const.gyro_offset[2] = 0;//Zero all offsets to generate new set

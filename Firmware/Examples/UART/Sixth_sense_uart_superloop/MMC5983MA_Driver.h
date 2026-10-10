@@ -43,7 +43,7 @@
 #define MMC_PROD_ID     0x2F
 
 #define MMC_SPI_READ_FLAG 0x80 
-#define MMC_SPI_ADDR_MASK 0x3F 
+#define MMC_SPI_ADDR_MASK 0x7F 
 #define MMC_CLEAR_INT   0x01
 
 // STRUCTURES
@@ -70,7 +70,6 @@ public:
       MMC5983MA();
 
       // Configuration tools
-      bool read_config(MMC_Config_t &out_config);
       bool check_config_validity(const MMC_Config_t &config);
       static void parse_config(const MMC_Config_t &config);
 
@@ -82,9 +81,9 @@ public:
       void clear_interrupt();
       
       // Calibration
-      bool Calibrate_Full_Soft_Hard_Iron(uint8_t num_seconds = 6, uint8_t num_timeout = 30);
-      ICM_Cal_t getCal() const {return calibration_const;}
-      void setCal(const MMC_Cal_t &cal_const) {calibration_const = cal_const};
+      bool Calibrate_Full_Soft_Hard_Iron(uint8_t num_seconds = 6, uint8_t num_timeout = 36);
+      MMC_Cal_t getCal() const {return calibration_const;}
+      void setCal(const MMC_Cal_t &cal_const) {calibration_const = cal_const;}
       
       MMC_Data_t getData() const { return data_holder; }
       float getODR() const { return ODR; }

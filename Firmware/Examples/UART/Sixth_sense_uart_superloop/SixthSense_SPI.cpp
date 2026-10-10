@@ -61,7 +61,6 @@ bool SPI_Bus_Init(int mosi_pin,
  * \brief Attaches and registers a specific slave device to an initialized SPI host bus.
  *
  * \param cs_pin            GPIO pin number assigned to Chip Select (CS / SS) for this specific slave device.
- * \param post_callback     ISR callback function (of type transaction_cb_t) invoked immediately when a DMA transfer completes.
  * \param out_handle        Reference to a spi_device_handle_t variable where the initialized driver handle will be stored.
  * \param clock_speed_hz    SPI clock frequency in Hertz. Defaults to 10000000 (10 MHz).
  * \param mode              SPI operating mode (0, 1, 2, or 3) setting CPOL and CPHA. Defaults to 0.
@@ -70,7 +69,6 @@ bool SPI_Bus_Init(int mosi_pin,
  * \return true if device was registered and attached successfully, false otherwise.
  */
 bool SPI_Add_Device(int cs_pin,
-                    transaction_cb_t post_callback,
                     spi_device_handle_t &out_handle,
                     int clock_speed_hz,
                     int mode,

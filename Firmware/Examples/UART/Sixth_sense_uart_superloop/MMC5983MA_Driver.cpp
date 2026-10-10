@@ -15,23 +15,31 @@ MMC5983MA::MMC5983MA()
 
 // SPI Register Access
 void MMC5983MA::write_reg(uint8_t reg, uint8_t data) {
+      uint8_t tx[2];
+      tx[0] = (reg & 0x7F);  // Bit 7 = 0 for Write
+      tx[1] = data;
+
       spi_transaction_t t = {};
-      t.flags = SPI_TRANS_USE_TXDATA;
-      t.length = 16; 
-      t.tx_data[0] = (0x00 | (reg & MMC_SPI_ADDR_MASK));
-      t.tx_data[1] = data;
+      t.length = 16;
+      t.tx_buffer = tx;
+      t.rx_buffer = nullptr;
+
       spi_device_polling_transmit(spi_handle, &t);
 }
 
 uint8_t MMC5983MA::read_reg(uint8_t reg) {
+      uint8_t tx[2] = { (uint8_t)(MMC_SPI_READ_FLAG | (reg & 0x7F)), 0x00 };
+      uint8_t rx[2] = { 0x00, 0x00 };
+
       spi_transaction_t t = {};
-      t.flags = SPI_TRANS_USE_TXDATA | SPI_TRANS_USE_RXDATA;
       t.length = 16;
-      t.tx_data[0] = (MMC_SPI_READ_FLAG | (reg & MMC_SPI_ADDR_MASK));
-      t.tx_data[1] = 0x00; 
+      t.tx_buffer = tx;
+      t.rx_buffer = rx;
+
       spi_device_polling_transmit(spi_handle, &t);
-      return t.rx_data[1];
+      return rx[1]; // Data byte is the second byte received
 }
+
 
 //MMC needs to clear interrupt after every read
 void MMC5983MA::clear_interrupt() {
@@ -79,28 +87,6 @@ bool MMC5983MA::check_config_validity(const MMC_Config_t &config) {
 }
 
 /**
- * \brief Reads the device registers and populates the 1-indexed config struct.
- */
-bool MMC5983MA::read_config(MMC_Config_t &out_config) {
-      uint8_t ctrl1 = read_reg(MMC_CTRL1);
-      uint8_t ctrl2 = read_reg(MMC_CTRL2);
-      
-      out_config.bandwidth  = (ctrl1 & 0x03) + 1;
-      out_config.outputRate = (ctrl2 & 0x07);
-
-      // Bit 7: En_prd_set. If 0, periodic set is disabled.
-      if (ctrl2 & 0x80) {
-            out_config.setFrequency = ((ctrl2 >> 4) & 0x07) + 1;
-      } else {
-            out_config.setFrequency = 0;
-      }
-
-      parse_config(out_config);
-
-      return true;
-}
-
-/**
  * \brief Reads the device registers to populate the configuration struct.
  */
 void MMC5983MA::parse_config(const MMC_Config_t &config) {
@@ -134,7 +120,7 @@ void MMC5983MA::parse_config(const MMC_Config_t &config) {
 /**
  * \brief Initializes the MMC5983MA into continuous measurement mode with explicit config.
  */
-bool MMC5983MA::init_chip(const MMC_Config_t &config, const MMC_Cal_t &MMC_Cal) {
+bool MMC5983MA::init_chip(const MMC_Config_t &config) {
 
       is_enabled = config.chip_enable;
 
@@ -152,8 +138,6 @@ bool MMC5983MA::init_chip(const MMC_Config_t &config, const MMC_Cal_t &MMC_Cal) 
 
       data_holder = {};//Empty out any holder value during initialization
       
-      setCal(MMC_Cal);//Set calibration struct from storage
-
       //Initialize last measurement
       mag_last_measurement[0] = 0;
       mag_last_measurement[1] = 0;
@@ -170,6 +154,10 @@ bool MMC5983MA::init_chip(const MMC_Config_t &config, const MMC_Cal_t &MMC_Cal) 
             Serial.println("[MMC-ERROR] Could not add MMC Device!");
             return false;
       }
+
+      //Reset the control 2 register to remove continuous mode
+      write_reg(MMC_CTRL2, 0x00);
+      delay(10);
 
       // 1. Issue Software Reset
       write_reg(MMC_CTRL1, 0x80); 
@@ -211,10 +199,6 @@ bool MMC5983MA::init_chip(const MMC_Config_t &config, const MMC_Cal_t &MMC_Cal) 
 
       Serial.printf("[MMC] Configured continuous mode.\n");
 
-      // Echo state of config by reading control registers
-      MMC_Config_t out_config; // Holder of read back config values
-      read_config(out_config);
-
       Serial.println("[MMC] MMC ready to be deployed\n");
 
       return true;
@@ -254,14 +238,15 @@ bool MMC5983MA::single_read() {
       y_18 |= (extra_bits >> 4) & 0x03;
       z_18 |= (extra_bits >> 2) & 0x03;
 
+      //clear_interrupt();//Clear the interrupt so it can pop again. This will only matter if MMC is set as the source of the interrupt
+      
       //Check if same as last measurement
       if ((x_18 == mag_last_measurement[0]) && (y_18 == mag_last_measurement[1]) && (z_18 == mag_last_measurement[2])){
             //Measurements are exactly identical, no new measurement was made
             return false;
       }
 
-      clear_interrupt();//Clear the interrupt so it can pop again. This will only matter if MMC is set as the source of the interrupt
-
+      
       mag_last_measurement[0] = x_18;
       mag_last_measurement[1] = y_18;
       mag_last_measurement[2] = z_18;
@@ -443,7 +428,7 @@ bool MMC5983MA::Evaluate_Calibration_Quality(const std::vector<float>& raw_x, co
       float norm_error = std_r / mean_r;
 
       Serial.printf("[MMC] Fit Mean Radius: %.4f G, Relative Error: %.2f%%\n", mean_r, norm_error * 100.0f);
-      return (norm_error < 0.10f);
+      return (norm_error < 0.02f);
 }
 
 /**

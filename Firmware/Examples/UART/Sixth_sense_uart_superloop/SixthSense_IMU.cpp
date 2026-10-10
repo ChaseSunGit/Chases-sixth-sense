@@ -13,9 +13,7 @@ SixthSense_IMU::SixthSense_IMU()
               mmc(), 
               data_holder{} {
       
-      // Initialize Fusion structure
-      FusionAhrsInitialise(&ahrs);
-      FusionBiasInitialise(&bias);
+      
       instance = this;//initialize object for ISR since it cannot access the hidden "this" object in function argument
 }
 
@@ -110,6 +108,10 @@ bool SixthSense_IMU::sensor_init(const ICM_Config_t &icm_cfg, const MMC_Config_t
             return false;
       }
 
+      // Initialize Fusion structure
+      FusionAhrsInitialise(&ahrs);
+      FusionBiasInitialise(&bias);
+
       //Initialize sensors
       bool icm_ready = icm.init_chip(icm_cfg);
       bool mmc_ready = mmc.init_chip(mmc_cfg);
@@ -170,6 +172,10 @@ bool SixthSense_IMU::processSensorData() {
       }//No unique data coming in
 
       data_holder.msTimeStamp = millis();
+
+      int time_elapsed = data_holder.msTimeStamp - last_time_millis;
+
+      last_time_millis = data_holder.msTimeStamp;
 
       ICM_Data_t icm_data = getICMData();
       MMC_Data_t mmc_data = getMMCData();
@@ -268,6 +274,24 @@ bool SixthSense_IMU::processSensorData() {
       data_holder.pitch = euler.angle.pitch;  // Rotation around Y axis (-90 to +90 deg)
       data_holder.yaw   = euler.angle.yaw;
 
+      //Serial.printf("\n\n\n\n\n\n\n");
+      //Serial.printf("Time:          %d elapsed, %d total\n", time_elapsed, data_holder.msTimeStamp);
+      //Serial.printf("Accel (g):     %.4f, %.4f, %.4f\n", data_holder.accel[0]*GRAVITY_ICM, data_holder.accel[1]*GRAVITY_ICM, data_holder.accel[2]*GRAVITY_ICM);
+      //Serial.printf("Gyro (rads/s): %.4f, %.4f, %.4f\n", data_holder.gyro[0]*DEG2RAD_ICM, data_holder.gyro[1]*DEG2RAD_ICM, data_holder.gyro[2]*DEG2RAD_ICM);
+      //Serial.printf("Mag (uT):      %.4f, %.4f, %.4f\n", data_holder.mag[0],data_holder.mag[1],data_holder.mag[2]);
+      //Serial.printf("Fusion (deg):  %.4f, %.4f, %.4f\n", data_holder.roll,data_holder.pitch,data_holder.yaw);
+      Serial.printf("\n\n\n\n\n\n\n"
+                        "Time:          %d elapsed, %u total\n"
+                        "Accel (g):     %.4f, %.4f, %.4f\n"
+                        "Gyro (rads/s): %.4f, %.4f, %.4f\n"
+                        "Mag (uT):      %.4f, %.4f, %.4f\n"
+                        "Fusion (deg):  %.4f, %.4f, %.4f\n",
+                        time_elapsed, data_holder.msTimeStamp,
+                        data_holder.accel[0]*GRAVITY_ICM, data_holder.accel[1]*GRAVITY_ICM, data_holder.accel[2]*GRAVITY_ICM,
+                        data_holder.gyro[0]*DEG2RAD_ICM, data_holder.gyro[1]*DEG2RAD_ICM, data_holder.gyro[2]*DEG2RAD_ICM,
+                        data_holder.mag[0],data_holder.mag[1],data_holder.mag[2],
+                        data_holder.roll,data_holder.pitch,data_holder.yaw);
+
       return true;
 }
 
@@ -301,13 +325,8 @@ bool SixthSense_IMU::readICMconfig() {
       return icm.read_config(read_config);
 }
 
-bool SixthSense_IMU::readMMCconfig() {
-      MMC_Config_t read_config;
-      return mmc.read_config(read_config);
-}
-
 //Input 3 config structs to receive their default values, used to reset chip settings to factory default
-void returnDefaultConfig(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg){
+void SixthSense_IMU::returnDefaultConfig(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg){
 
       Serial.println("[Config] ICM default config:");
       icm_cfg = {
@@ -322,7 +341,7 @@ void returnDefaultConfig(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Co
       Serial.println("[Config] MMC default config:");
       mmc_cfg = {
             .outputRate = 6,        //1-7: 1 (1Hz), 2 (10Hz), 3 (20Hz), 4 (50Hz), 5 (100Hz), 6 (200Hz, default), 7(1000Hz)
-            .bandwidth = 1,         //1-4: 1 (100Hz, default), 2 (200Hz), 3 (400Hz), 4 (800Hz)
+            .bandwidth = 2,         //1-4: 1 (100Hz), 2 (200Hz, default), 3 (400Hz), 4 (800Hz)
             .setFrequency = 8,      //0-8 (measurements per set): 0: (disable autoset), 1 (1 sample), 2 (25), 3 (75), 4 (100), 5 (250), 6 (500), 7 (1000), 8 (2000, default)
             .chip_enable = 1        //0 - disable, 1 - enable
       };

@@ -53,9 +53,9 @@ public:
       bool processSensorData();
 
       // Pass-throughs for explicit Subclass Functionality
-      bool calibrateAccel(int num_samples = 200);
-      bool calibrateGyro(int num_samples = 200);
-      bool calibrateMag(uint8_t num_seconds = 6, uint8_t num_timeout = 30);
+      bool calibrateAccel(int num_samples = 2000);
+      bool calibrateGyro(int num_samples = 2000);
+      bool calibrateMag(uint8_t num_seconds = 6, uint8_t num_timeout = 36);
 
       // Read settings
       bool readICMconfig();
@@ -67,13 +67,13 @@ public:
       Fusion_Data_t getFusionData() const;
 
       //Calibration set and get passthroughs
-      ICM_Cal_t getICMCal() const {return icm.getCal()};
-      MMC_Cal_t getMMCCal() const {return mmc.getCal()};
-      void setICMCal(ICM_Cal_t &cal) { icm.setCal(cal) };
-      void setMMCCal(MMC_Cal_t &cal) { mmc.setCal(cal) };
+      ICM_Cal_t getICMCal() const { return icm.getCal(); }
+      MMC_Cal_t getMMCCal() const { return mmc.getCal(); }
+      void setICMCal(ICM_Cal_t &cal) { icm.setCal(cal); }
+      void setMMCCal(MMC_Cal_t &cal) { mmc.setCal(cal); }
 
       //Returns the default values of each of the configuration files
-      void returnDefaultConfig(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg);
+      static void returnDefaultConfig(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg);
 
       //Setup ISR for data ready
       static SixthSense_IMU* instance;
@@ -99,7 +99,7 @@ private:
       // x-io Fusion variables
       FusionAhrs ahrs;
       FusionBias bias; //gyro bias tracking
-      uint32_t last_time_micros;
+      uint32_t last_time_millis;
 
       //Data ready boolean
       volatile bool new_data_ready;
