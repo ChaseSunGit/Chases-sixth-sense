@@ -7,9 +7,9 @@
 
 #include "SixthSense_Config.h"
 
-SixthSense_Config::SixthSense_Config(SixthSense_IMU* imu_ptr) : imu(imu_ptr) {}
+SixthSense_Config::SixthSense_Config(SixthSense_IMU* imu_ptr, SixthSense_IO* io_ptr) : imu(imu_ptr), io(io_ptr) {}
 
-bool SixthSense_Config::begin(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg) {
+bool SixthSense_Config::begin(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg, IO_Config_t &io_cfg) {
       // Initialize NVS
       esp_err_t err = nvs_flash_init();
 
@@ -20,7 +20,7 @@ bool SixthSense_Config::begin(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusi
       ESP_ERROR_CHECK(err);
 
       // Attempt to load. If either fails, it's the first time running (or memory was wiped)
-      bool configsLoaded = loadConfigs(icm_cfg, mmc_cfg, fusion_cfg);
+      bool configsLoaded = loadConfigs(icm_cfg, mmc_cfg, fusion_cfg, io_cfg);
       // There is a fundamental difference between these functions 
       //- loadConfigs grabs stored config values in memory and loads the local config structs (but not on the sensor)
       //- loadCalibration loads stored config constants directly into the sensors during runtime, no need to reinitialize sensors
@@ -28,8 +28,8 @@ bool SixthSense_Config::begin(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusi
 
       if (!configsLoaded || !calsLoaded) {
             Serial.println("[NVS] No saved configurations found. Performing initial setup...");
-            factoryReset(icm_cfg, mmc_cfg, fusion_cfg);
-            saveConfigs(icm_cfg, mmc_cfg, fusion_cfg);
+            factoryReset(icm_cfg, mmc_cfg, fusion_cfg, io_cfg);
+            saveConfigs(icm_cfg, mmc_cfg, fusion_cfg, io_cfg);
             saveCalibration();
       } else {
             Serial.println("[NVS] Configurations and calibrations successfully loaded from flash.");
@@ -66,10 +66,10 @@ void SixthSense_Config::checkUART() {
       }
 }
 
-void SixthSense_Config::factoryReset(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg) {
+void SixthSense_Config::factoryReset(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg, IO_Config_t &io_cfg) {
       Serial.println("[Config] Generating default configurations...");
-      imu->returnDefaultConfig(icm_cfg, mmc_cfg, fusion_cfg);
-
+      SixthSense_IMU::returnDefaultConfig(icm_cfg, mmc_cfg, fusion_cfg);
+      SixthSense_IO::returnDefaultConfig(io_cfg);
       // Zero out IMU calibrations (using Identity Matrix for Magnetometer Soft Iron)
       ICM_Cal_t icm_cal = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} }; // all zeros in offsets
       MMC_Cal_t mmc_cal = { 
@@ -92,8 +92,9 @@ void SixthSense_Config::enterConfigMode() {
       ICM_Config_t icm_cfg;
       MMC_Config_t mmc_cfg;
       Fusion_Config_t fusion_cfg;
+      IO_Config_t io_cfg;
       
-      loadConfigs(icm_cfg, mmc_cfg, fusion_cfg); // Load the configs from memory
+      loadConfigs(icm_cfg, mmc_cfg, fusion_cfg, io_cfg); // Load the configs from memory
 
       printMainMenu();
 
@@ -111,9 +112,14 @@ void SixthSense_Config::enterConfigMode() {
                         if (cmdBuffer.length() > 0) {
                               if (cmdBuffer == "exit_save") {
                                     Serial.println("Exiting... Saving and reinitializing sensor...");
-                                    saveConfigs(icm_cfg, mmc_cfg, fusion_cfg);
+                                    saveConfigs(icm_cfg, mmc_cfg, fusion_cfg, io_cfg);
                                     saveCalibration();
                                     imu->sensor_init(icm_cfg, mmc_cfg, fusion_cfg);
+                                    if (io != nullptr) {
+                                          io->RTOS_stopIOTasks();       // Deletes TX/RX FreeRTOS tasks and stops/uninstalls TWAI
+                                          io->begin(io_cfg);            // Reconfigures filters, node mode, queues, and restarts TWAI
+                                          io->RTOS_startIOTasks();      // Re-launches FreeRTOS TX/RX tasks with updated configuration
+                                    }
                                     inConfig = false;
                               } else if (cmdBuffer == "exit_no_save") {
                                     Serial.println("Exiting... Config changes discarded, reverting calibration from memory...");
@@ -127,6 +133,8 @@ void SixthSense_Config::enterConfigMode() {
                                     magMenu(mmc_cfg);
                               } else if (cmdBuffer == "fusion") {
                                     fusionMenu(fusion_cfg);
+                              } else if (cmdBuffer == "io") {
+                                    ioMenu(io_cfg);
                               } else if (cmdBuffer == "cal_accel") {
                                     Serial.println("Calibrating accelerometer - lay sensor flat...");
                                     for (int i = 2; i > 0; i--) {
@@ -152,7 +160,7 @@ void SixthSense_Config::enterConfigMode() {
                               } else if (cmdBuffer == "display_cal") {
                                     displayCalibration();
                               } else if (cmdBuffer == "factory_reset") {
-                                    factoryReset(icm_cfg, mmc_cfg, fusion_cfg);
+                                    factoryReset(icm_cfg, mmc_cfg, fusion_cfg, io_cfg);
                                     Serial.println("Reset staged. Changes won't be applied until save and exit.");
                               } else {
                                     Serial.println("Unknown command. Type 'menu' for options.");
@@ -173,7 +181,7 @@ void SixthSense_Config::enterConfigMode() {
 
       Serial.println("=== RESUMING SENSOR OPERATIONS ===");
       vTaskDelay(pdMS_TO_TICKS(1000)); 
-      imu->RTOS_resumeReading(); //[cite: 2]
+      imu->RTOS_resumeReading();
 }
 
 void SixthSense_Config::printMainMenu() {
@@ -183,6 +191,7 @@ void SixthSense_Config::printMainMenu() {
       Serial.println("  accel_gyro    - Accelerometer + Gyroscope Settings (ODR, Range, BW, Enable)");
       Serial.println("  mag           - Magnetometer Settings (ODR, BW, Set Freq, Enable)");
       Serial.println("  fusion        - Sensor Fusion Settings (Gains, Rejections, Axis)");
+      Serial.println("  io            - IO & Communications Settings (Mode, CAN ID, write content, Wireless)");
       Serial.println("\nDirect Commands:");
       Serial.println("  cal_accel     - Calibrate Accelerometer");
       Serial.println("  cal_gyro      - Calibrate Gyroscope");
@@ -541,11 +550,122 @@ void SixthSense_Config::fusionMenu(Fusion_Config_t &fusion_cfg) {
       }
 }
 
+void SixthSense_Config::ioMenu(IO_Config_t &io_cfg) {
+      Serial.printf("\n\n\n\n\n\n\n\n\n\n");
+      Serial.println("--- IO & COMMUNICATION SETTINGS ---");
+      Serial.println("Format: set <param> <value> | Example: set mode 0");
+      Serial.println("Commands: disp_staged, back");
+      Serial.println("Params:");
+      Serial.println("  can_id <10-2040>    - Local CAN Base ID (must be a multiple of 10), 100 default");
+      for (int i = 0; i < 5; i++) { Serial.printf("  Peripheral %d ID: %u\n", i + 1, io_cfg.peripheral_can_ids[i]); }
+      Serial.println("  p_id<1-5> <10-2040> - Peripheral CAN Base ID (index 1 to 5, multiple of 10)");
+      Serial.println("  mode <0-2>          - Node mode: 0 (Central UART, default), 1 (Peripheral CAN), 2 (BLE)");
+      Serial.println("  en_can_1mhz <0-1>   - Enable CAN 1MHz operation: 0 (Disable, default, 500kHz), 1 (Enable)");
+      Serial.println("  w_accgyro <0-1>     - Write Accel/Gyro: 0 (Disable), 1 (Enable, default)");
+      Serial.println("  w_mag <0-1>         - Write Magnetometer: 0 (Disable), 1 (Enable, default)");
+      Serial.println("  w_euler <0-1>       - Write Euler Angles: 0 (Disable, default), 1 (Enable)");
+      Serial.println("  w_quat <0-1>        - Write Quaternions: 0 (Disable, default), 1 (Enable)");
+      Serial.println("  verbose <0-1>       - Verbose UART output: 0 (Disable), 1 (Enable, default)");
+
+      String cmdBuffer = "";
+
+      while(true) {
+            while (Serial.available()) {
+                  char c = (char)Serial.read();
+
+                  if (c == '\r' || c == '\n') {
+                        cmdBuffer.trim();
+                        cmdBuffer.toLowerCase();
+
+                        if (cmdBuffer.length() > 0) {
+                              if (cmdBuffer == "back") { 
+                                    printMainMenu(); 
+                                    return; 
+                              } else if (cmdBuffer == "disp_staged") {
+                                    Serial.println();
+                                    Serial.println("--- Staged IO Configuration ---");
+                                    Serial.printf("  CAN ID         : %u\n", io_cfg.local_can_id);
+                                    Serial.printf("  Mode           : %d\n", io_cfg.mode);
+                                    Serial.printf("  Enable CAN HS  : %d\n", io_cfg.CAN_1MHZ_en);
+                                    Serial.printf("  Write Acc/Gyro : %d\n", io_cfg.write_accelGyro);
+                                    Serial.printf("  Write Mag      : %d\n", io_cfg.write_mag);
+                                    Serial.printf("  Write Euler    : %d\n", io_cfg.write_euler);
+                                    Serial.printf("  Write Quat     : %d\n", io_cfg.write_quat);
+                                    Serial.printf("  Verbose UART   : %d\n", io_cfg.verbose_uart);
+                              } else if (cmdBuffer.startsWith("set ")) {
+                                    int spaceIdx = cmdBuffer.lastIndexOf(' ');
+                                    if (spaceIdx <= 4) {
+                                          Serial.println("Invalid format. Use: set <param> <value>");
+                                    } else {
+                                          String param = cmdBuffer.substring(4, spaceIdx);
+                                          int val = cmdBuffer.substring(spaceIdx + 1).toInt();
+
+                                          if (param == "can_id") {
+                                                if (val < 10 || val > 2040 || val % 10 != 0) {
+                                                      Serial.println("Value must be between 10-2040 and a multiple of 10.");
+                                                } else {
+                                                      io_cfg.local_can_id = (uint16_t)val;
+                                                      Serial.printf("Staged CAN ID set to %u\n", io_cfg.local_can_id);
+                                                }
+                                          } else if (param.startsWith("p_id")) {
+                                                int idx = param.substring(4).toInt(); // Extract index (e.g., "p_id1" -> 1)
+                                                if (idx < 1 || idx > 5) {
+                                                      Serial.println("Invalid peripheral index. Use: p_id1 through p_id5");
+                                                } else if (val < 10 || val > 2040 || val % 10 != 0) {
+                                                      Serial.println("Value must be between 10-2040 and a multiple of 10.");
+                                                } else {
+                                                      io_cfg.peripheral_can_ids[idx - 1] = (uint16_t)val;
+                                                      Serial.printf("Staged Peripheral %d CAN ID set to %u\n", idx, io_cfg.peripheral_can_ids[idx - 1]);
+                                                }
+                                          } else if (param == "mode") {
+                                                if (val < 0 || val > 1) {
+                                                      Serial.println("Value out of range (0-1).");
+                                                } else {
+                                                      io_cfg.mode = (NodeMode)val;
+                                                      Serial.printf("Staged Node Mode set to %d\n", io_cfg.mode);
+                                                }
+                                          } else if (param == "en_can_1mhz") {
+                                                io_cfg.CAN_1MHZ_en = (val !=0);
+                                                Serial.printf("Staged 1Mhz CAN enable set to %d\n", io_cfg.CAN_1MHZ_en);
+                                                Serial.printf("WARNING: CAN bus at 1Mhz is very sensitive to wire length and termination. Packets are likely to be dropped if improper wiring is observed.");
+                                          } else if (param == "w_accgyro") {
+                                                io_cfg.write_accelGyro = (val != 0);
+                                                Serial.printf("Staged Accel/Gyro Write set to %d\n", io_cfg.write_accelGyro);
+                                          } else if (param == "w_mag") {
+                                                io_cfg.write_mag = (val != 0);
+                                                Serial.printf("Staged Mag Write set to %d\n", io_cfg.write_mag);
+                                          } else if (param == "w_euler") {
+                                                io_cfg.write_euler = (val != 0);
+                                                Serial.printf("Staged Euler Write set to %d\n", io_cfg.write_euler);
+                                          } else if (param == "w_quat") {
+                                                io_cfg.write_quat = (val != 0);
+                                                Serial.printf("Staged Quat Write set to %d\n", io_cfg.write_quat);
+                                          } else if (param == "verbose") {
+                                                io_cfg.verbose_uart = (val != 0);
+                                                Serial.printf("Staged Verbose UART set to %d\n", io_cfg.verbose_uart);
+                                          } else {
+                                                Serial.println("Unknown parameter.");
+                                          }
+                                    }
+                              } else {
+                                    Serial.println("Unknown command. Type 'disp_staged', 'set <param> <val>', or 'back'.");
+                              }
+                              cmdBuffer = "";
+                        }
+                  } else {
+                        cmdBuffer += c;
+                        if (cmdBuffer.length() > 64) cmdBuffer = "";
+                  }
+            }
+            vTaskDelay(pdMS_TO_TICKS(10));
+      }
+}
+
 // --------------------------------------------------------
 // NVS MEMORY OPERATIONS
 // --------------------------------------------------------
 
-bool SixthSense_Config::loadConfigs(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg) {
+bool SixthSense_Config::loadConfigs(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg, IO_Config_t &io_cfg) {
       if (nvs_open("SixthSense", NVS_READONLY, &imu_config_handle) != ESP_OK) return false;
       
       bool success = true;
@@ -557,17 +677,22 @@ bool SixthSense_Config::loadConfigs(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg
       
       len = sizeof(Fusion_Config_t);
       if (nvs_get_blob(imu_config_handle, "fus_cfg", &fusion_cfg, &len) != ESP_OK) success = false;
+
+      len = sizeof(IO_Config_t);
+      if (nvs_get_blob(imu_config_handle, "io_cfg", &io_cfg, &len) != ESP_OK) success = false;
       
       nvs_close(imu_config_handle);
       return success;
 }
 
-bool SixthSense_Config::saveConfigs(const ICM_Config_t &icm_cfg, const MMC_Config_t &mmc_cfg, const Fusion_Config_t &fusion_cfg) {
+bool SixthSense_Config::saveConfigs(const ICM_Config_t &icm_cfg, const MMC_Config_t &mmc_cfg, const Fusion_Config_t &fusion_cfg, const IO_Config_t &io_cfg) {
       if (nvs_open("SixthSense", NVS_READWRITE, &imu_config_handle) != ESP_OK) return false;
+      
       
       nvs_set_blob(imu_config_handle, "icm_cfg", &icm_cfg, sizeof(ICM_Config_t));
       nvs_set_blob(imu_config_handle, "mmc_cfg", &mmc_cfg, sizeof(MMC_Config_t));
       nvs_set_blob(imu_config_handle, "fus_cfg", &fusion_cfg, sizeof(Fusion_Config_t));
+      nvs_set_blob(imu_config_handle, "io_cfg", &io_cfg, sizeof(IO_Config_t));
       
       nvs_commit(imu_config_handle);
       nvs_close(imu_config_handle);

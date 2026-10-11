@@ -173,7 +173,7 @@ bool SixthSense_IMU::processSensorData() {
 
       data_holder.msTimeStamp = millis();
 
-      int time_elapsed = data_holder.msTimeStamp - last_time_millis;
+      uint32_t time_elapsed = data_holder.msTimeStamp - last_time_millis;
 
       last_time_millis = data_holder.msTimeStamp;
 
@@ -274,24 +274,9 @@ bool SixthSense_IMU::processSensorData() {
       data_holder.pitch = euler.angle.pitch;  // Rotation around Y axis (-90 to +90 deg)
       data_holder.yaw   = euler.angle.yaw;
 
-      //Serial.printf("\n\n\n\n\n\n\n");
-      //Serial.printf("Time:          %d elapsed, %d total\n", time_elapsed, data_holder.msTimeStamp);
-      //Serial.printf("Accel (g):     %.4f, %.4f, %.4f\n", data_holder.accel[0]*GRAVITY_ICM, data_holder.accel[1]*GRAVITY_ICM, data_holder.accel[2]*GRAVITY_ICM);
-      //Serial.printf("Gyro (rads/s): %.4f, %.4f, %.4f\n", data_holder.gyro[0]*DEG2RAD_ICM, data_holder.gyro[1]*DEG2RAD_ICM, data_holder.gyro[2]*DEG2RAD_ICM);
-      //Serial.printf("Mag (uT):      %.4f, %.4f, %.4f\n", data_holder.mag[0],data_holder.mag[1],data_holder.mag[2]);
-      //Serial.printf("Fusion (deg):  %.4f, %.4f, %.4f\n", data_holder.roll,data_holder.pitch,data_holder.yaw);
-      Serial.printf("\n\n\n\n\n\n\n"
-                        "Time:          %d elapsed, %u total\n"
-                        "Accel (g):     %.4f, %.4f, %.4f\n"
-                        "Gyro (rads/s): %.4f, %.4f, %.4f\n"
-                        "Mag (uT):      %.4f, %.4f, %.4f\n"
-                        "Fusion (deg):  %.4f, %.4f, %.4f\n",
-                        time_elapsed, data_holder.msTimeStamp,
-                        data_holder.accel[0]*GRAVITY_ICM, data_holder.accel[1]*GRAVITY_ICM, data_holder.accel[2]*GRAVITY_ICM,
-                        data_holder.gyro[0]*DEG2RAD_ICM, data_holder.gyro[1]*DEG2RAD_ICM, data_holder.gyro[2]*DEG2RAD_ICM,
-                        data_holder.mag[0],data_holder.mag[1],data_holder.mag[2],
-                        data_holder.roll,data_holder.pitch,data_holder.yaw);
-
+      if (output_queue != NULL) {
+            xQueueOverwrite(output_queue, &data_holder); // Overwrite current data in queue to ensure most up-to-date packet
+      }
       return true;
 }
 

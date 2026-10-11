@@ -12,6 +12,9 @@
 #include "ICM42607_Driver.h"
 #include "MMC5983MA_Driver.h"
 
+static constexpr float GRAVITY_ICM = 9.81f; // Convert Gs to m/s^2
+static constexpr float DEG2RAD_ICM = 0.01745329f; // Convert dps to rad/s
+
 struct Fusion_Data_t {
       float accel[3];         //Accelerometer xyz
       float gyro[3];          //Gyroscope xyz
@@ -82,7 +85,9 @@ public:
       //RTOS start the sensor handling task
       bool RTOS_startReadingTask(BaseType_t core_id = 1, UBaseType_t priority = 5);
       void RTOS_suspendReading() { if(imu_task_handle) vTaskSuspend(imu_task_handle); }
-      void RTOS_resumeReading() { if(imu_task_handle) vTaskResume(imu_task_handle); }
+      void RTOS_resumeReading() { if(imu_task_handle) vTaskResume(imu_task_handle); }\
+      //Set output queue path
+      void setOutputQueue(QueueHandle_t queue) { output_queue = queue; }
 
 private:
       ICM42607 icm;
@@ -104,13 +109,13 @@ private:
       //Data ready boolean
       volatile bool new_data_ready;
 
+      
       //RTOS task handle for sensor reading
       TaskHandle_t imu_task_handle = NULL;
+      // RTOS Queue handle for sending data for IO
+      QueueHandle_t output_queue = NULL;
       // Static trampoline to route FreeRTOS to the class instance
       static void IMU_Task_Trampoline(void *pvParameters);
-
-      static constexpr float GRAVITY_ICM = 9.81f; // Convert Gs to m/s^2
-      static constexpr float DEG2RAD_ICM = 0.01745329f; // Convert dps to rad/s
 };
 
 #endif /* SIXTHSENSE_IMU_H */

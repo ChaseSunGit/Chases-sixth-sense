@@ -1,49 +1,45 @@
 #include <Arduino.h>
 #include "SixthSense_IMU.h"
 #include "SixthSense_Config.h"
+#include "SixthSense_IO.h"
 
 // Global instances
 SixthSense_IMU imu;
-SixthSense_Config configManager(&imu);
+SixthSense_IO ioModule;
+SixthSense_Config configManager(&imu, &ioModule);
+
 
 void setup() {
       Serial.setTxBufferSize(4096);
       Serial.begin();
-      while (!Serial) { delay(10); }
-      
+      vTaskDelay(pdMS_TO_TICKS(200));//Do not block execution if no serial, just run sensor
 
       Serial.println("Initializing SixthSense System...");
 
-      //Initialize config structs
       ICM_Config_t icm_cfg;
       MMC_Config_t mmc_cfg;
       Fusion_Config_t fusion_cfg;
+      IO_Config_t io_cfg;
 
-      // Initialize configuration manager and load saved configurations from NVS
-      configManager.begin(icm_cfg, mmc_cfg, fusion_cfg);
+      configManager.begin(icm_cfg, mmc_cfg, fusion_cfg, io_cfg);
 
-      // Initialize the IMU with the loaded configurations
       if (!imu.sensor_init(icm_cfg, mmc_cfg, fusion_cfg)) {
-            Serial.println("Warning: IMU initialization returned false (sensors may be disabled or missing).");
+            Serial.println("Warning: IMU initialization returned false.");
       }
 
-      // Start FreeRTOS tasks for background reading and UART CLI monitoring
-      configManager.RTOS_startConfigTask(1, 2);
-      vTaskDelay(pdMS_TO_TICKS(5000));
-      imu.RTOS_startReadingTask(1, 5);
-      
+      ioModule.begin(io_cfg);
 
-      Serial.println("System Ready. Type 'config' to enter the configuration menu.");
+      // Link IO Mailbox to IMU
+      imu.setOutputQueue(ioModule.getIMUDataQueue());
+
+      vTaskDelay(pdMS_TO_TICKS(5000));//Give some time for user to read debug message
+
+      // Start Tasks
+      configManager.RTOS_startConfigTask(1, 2);
+      ioModule.RTOS_startIOTasks(0, 4);        // Pinned to Core 0
+      imu.RTOS_startReadingTask(1, 5);         // Pinned to Core 1
 }
 
 void loop() {
-
-      vTaskDelay(portMAX_DELAY); // Sleeps forever, 0% CPU usage
-      // Sensor reading and configuration are handled in RTOS tasks.
-      // We can print the data here periodically if fusion is active.
-      //Fusion_Data_t data = imu.getFusionData();
-      
-      //Serial.printf("Roll: %.2f | Pitch: %.2f | Yaw: %.2f\n", data.roll, data.pitch, data.yaw);
-                        
-      //vTaskDelay(pdMS_TO_TICKS(100)); // Print at 10Hz
+      vTaskDelay(portMAX_DELAY); // Sleeps forever
 }
