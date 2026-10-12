@@ -228,12 +228,12 @@ int SixthSense_IO::getPeripheralIndex(uint16_t base_id) {
 
 void SixthSense_IO::printUARTData() {
       uint32_t current_ms = millis();
-      Serial.printf("%u",current_ms);
+      
       for (int i = 0; i < 6; i++) {
             if (!active_can_channel[i]) continue;
-
+            Serial.printf("%u",current_ms);
             switch (i) {
-            case 0: Serial.printf(",PS"); break;
+            case 0: Serial.printf(",PL"); break;
             case 1: Serial.printf(",LT"); break;
             case 2: Serial.printf(",LS"); break;
             case 3: Serial.printf(",RT"); break;
@@ -258,6 +258,7 @@ void SixthSense_IO::printUARTData() {
             }
             Serial.println();
       }
+      //Serial.println();
 }
 
 void SixthSense_IO::printUARTData_Debug() {

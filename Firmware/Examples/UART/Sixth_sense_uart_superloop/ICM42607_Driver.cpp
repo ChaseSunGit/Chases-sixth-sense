@@ -327,10 +327,10 @@ bool ICM42607::single_read(){
             data_holder.gyro[i] = gyro_raw[i] / gyro_conversion; //reading dps
       }
       
+      temp_correct();
       //Apply calibration
       apply_calibration();
-      //Optional, apply temp correction
-      temp_correct();
+
 
       return true;
 }
@@ -361,8 +361,8 @@ void ICM42607::temp_correct() {
       float temp_delta = data_holder.temp - 25.0f;
 
       for (int i = 0; i < 3; i++) {
-            data_holder.accel_cal[i] -= (temp_delta * ACCEL_TEMP_COEFF);
-            data_holder.gyro_cal[i]  -= (temp_delta * GYRO_TEMP_COEFF);
+            data_holder.accel[i] -= (temp_delta * ACCEL_TEMP_COEFF);
+            data_holder.gyro[i]  -= (temp_delta * GYRO_TEMP_COEFF);
       }
 }
 

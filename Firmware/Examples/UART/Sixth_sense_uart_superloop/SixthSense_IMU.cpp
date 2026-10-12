@@ -155,6 +155,8 @@ bool SixthSense_IMU::sensor_init(const ICM_Config_t &icm_cfg, const MMC_Config_t
       else{
             attachInterrupt(digitalPinToInterrupt(PIN_INT_ICM), ISR_dataReady, RISING);
       }
+
+      Serial.printf("Sensor initialzation complete. Enabled: ICM %d, MMC %d, Fusion %d\n",icm_ready, mmc_ready, fusion_enabled);
       return fusion_enabled;
 }
 
@@ -225,6 +227,10 @@ bool SixthSense_IMU::processSensorData() {
       }
       
       if (!fusion_enabled){
+            //Write to the queue
+            if (output_queue != NULL) {
+                  xQueueOverwrite(output_queue, &data_holder); // Overwrite current data in queue to ensure most up-to-date packet
+            }
             return true; //No fusion required, only raw data desired
       }
 

@@ -557,7 +557,7 @@ void SixthSense_Config::ioMenu(IO_Config_t &io_cfg) {
       Serial.println("Commands: disp_staged, back");
       Serial.println("Params:");
       Serial.println("  can_id <10-2040>    - Local CAN Base ID (must be a multiple of 10), 100 default");
-      for (int i = 0; i < 5; i++) { Serial.printf("  Peripheral %d ID: %u\n", i + 1, io_cfg.peripheral_can_ids[i]); }
+      //for (int i = 0; i < 5; i++) { Serial.printf("  Peripheral %d ID: %u\n", i + 1, io_cfg.peripheral_can_ids[i]); }
       Serial.println("  p_id<1-5> <10-2040> - Peripheral CAN Base ID (index 1 to 5, multiple of 10)");
       Serial.println("  mode <0-2>          - Node mode: 0 (Central UART, default), 1 (Peripheral CAN), 2 (BLE)");
       Serial.println("  en_can_1mhz <0-1>   - Enable CAN 1MHz operation: 0 (Disable, default, 500kHz), 1 (Enable)");
@@ -584,14 +584,15 @@ void SixthSense_Config::ioMenu(IO_Config_t &io_cfg) {
                               } else if (cmdBuffer == "disp_staged") {
                                     Serial.println();
                                     Serial.println("--- Staged IO Configuration ---");
-                                    Serial.printf("  CAN ID         : %u\n", io_cfg.local_can_id);
-                                    Serial.printf("  Mode           : %d\n", io_cfg.mode);
-                                    Serial.printf("  Enable CAN HS  : %d\n", io_cfg.CAN_1MHZ_en);
-                                    Serial.printf("  Write Acc/Gyro : %d\n", io_cfg.write_accelGyro);
-                                    Serial.printf("  Write Mag      : %d\n", io_cfg.write_mag);
-                                    Serial.printf("  Write Euler    : %d\n", io_cfg.write_euler);
-                                    Serial.printf("  Write Quat     : %d\n", io_cfg.write_quat);
-                                    Serial.printf("  Verbose UART   : %d\n", io_cfg.verbose_uart);
+                                    Serial.printf("  CAN ID              : %u\n", io_cfg.local_can_id);
+                                    Serial.printf("  Peripheral sensor ID: %d, %d, %d, %d, %d\n", io_cfg.peripheral_can_ids[0],io_cfg.peripheral_can_ids[1],io_cfg.peripheral_can_ids[2],io_cfg.peripheral_can_ids[3],io_cfg.peripheral_can_ids[4]);
+                                    Serial.printf("  Mode                : %d\n", io_cfg.mode);
+                                    Serial.printf("  Enable CAN HS       : %d\n", io_cfg.CAN_1MHZ_en);
+                                    Serial.printf("  Write Acc/Gyro      : %d\n", io_cfg.write_accelGyro);
+                                    Serial.printf("  Write Mag           : %d\n", io_cfg.write_mag);
+                                    Serial.printf("  Write Euler         : %d\n", io_cfg.write_euler);
+                                    Serial.printf("  Write Quat          : %d\n", io_cfg.write_quat);
+                                    Serial.printf("  Verbose UART        : %d\n", io_cfg.verbose_uart);
                               } else if (cmdBuffer.startsWith("set ")) {
                                     int spaceIdx = cmdBuffer.lastIndexOf(' ');
                                     if (spaceIdx <= 4) {

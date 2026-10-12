@@ -23,16 +23,16 @@ void setup() {
 
       configManager.begin(icm_cfg, mmc_cfg, fusion_cfg, io_cfg);
 
-      if (!imu.sensor_init(icm_cfg, mmc_cfg, fusion_cfg)) {
-            Serial.println("Warning: IMU initialization returned false.");
-      }
+      imu.sensor_init(icm_cfg, mmc_cfg, fusion_cfg);
 
       ioModule.begin(io_cfg);
+
+      Serial.println("Starting in 2 seconds:");
 
       // Link IO Mailbox to IMU
       imu.setOutputQueue(ioModule.getIMUDataQueue());
 
-      vTaskDelay(pdMS_TO_TICKS(5000));//Give some time for user to read debug message
+      vTaskDelay(pdMS_TO_TICKS(2000));//Give some time for user to read debug message
 
       // Start Tasks
       configManager.RTOS_startConfigTask(1, 2);
