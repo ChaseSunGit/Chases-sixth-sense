@@ -13,11 +13,10 @@ SixthSense_IO::SixthSense_IO() {
 
 bool SixthSense_IO::begin(const IO_Config_t &config) {
       io_config = config;
-      active_can_channel[0] = true;//Mark itself as active
+      active_can_channel[0] = true; // Mark itself as active
 
-      // Create 1-slot mailbox queue for zero-latency, fresh-only reads
       if (imu_data_queue == NULL) {
-            imu_data_queue = xQueueCreate(1, sizeof(Fusion_Data_t)); //Only 1 deep as mailbox, new data always overwrite old data
+            imu_data_queue = xQueueCreate(1, sizeof(Fusion_Data_t));
             if (imu_data_queue == NULL) {
                   Serial.println("[IO] Failed to create Mailbox Queue");
                   return false;
@@ -25,32 +24,32 @@ bool SixthSense_IO::begin(const IO_Config_t &config) {
       }
 
       twai_general_config_t twai_g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TWAI_TX, CAN_TWAI_RX, TWAI_MODE_NORMAL);
-      if ( io_config.mode == NODE_CENTRAL ){
-            twai_g_config.rx_queue_len = 512; //Massive rx buffer that can handle 10+ packets of full received data at 8bytes * 5 peripheral sensors
+      if (io_config.mode == NODE_CENTRAL) {
+            twai_g_config.rx_queue_len = 512;
       } else {
-            twai_g_config.rx_queue_len = 8; //Don't need anything for rx, but assign 8 because that is the minimum size requirement
+            twai_g_config.rx_queue_len = 8;
       }
+      twai_g_config.tx_queue_len = 32;
 
-      twai_g_config.tx_queue_len = 32; // max 8 data packs transmitted per cycle
+      // Enable alerts so neither Central nor Peripherals stay stuck in Bus-Off or RX Queue Full
+      twai_g_config.alerts_enabled = TWAI_ALERT_BUS_OFF | TWAI_ALERT_BUS_RECOVERED | TWAI_ALERT_ERR_PASS | TWAI_ALERT_RX_QUEUE_FULL;
 
       twai_filter_config_t twai_f_config;
-
       if (io_config.mode == NODE_PERIPHERAL) {
-            // Peripheral Mode: Reject all inbound frames in hardware to conserve CPU cycles
             twai_f_config.single_filter = true;
-            twai_f_config.acceptance_code = 0x00000000;
-            twai_f_config.acceptance_mask = 0x00000000; 
+            twai_f_config.acceptance_code = 0xFFFFFFFF; // Impossible match pattern
+            twai_f_config.acceptance_mask = 0x00000000; // Must match all 32 bits
       } else {
-            // Central Mode: Hardware filter for IDs 0 - 127
             twai_f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
       }
 
-
       twai_timing_config_t twai_t_config;
-      if (io_config.CAN_1MHZ_en){
+      if (io_config.CAN_1MHZ_en) {
             twai_t_config = TWAI_TIMING_CONFIG_1MBITS();
       } else {
             twai_t_config = TWAI_TIMING_CONFIG_500KBITS();
+            // Increase SJW from 3 to 4 Tq to tolerate edge jitter / slew delay on longer cables
+            twai_t_config.sjw = 4;
       }
 
       if (twai_driver_install(&twai_g_config, &twai_t_config, &twai_f_config) != ESP_OK) {
@@ -172,18 +171,33 @@ void SixthSense_IO::receiveTask() {
       twai_message_t rx_msg;
 
       while (1) {
-            if (twai_receive(&rx_msg, portMAX_DELAY) == ESP_OK) {
-                  if (rx_msg.data_length_code != 8) {
-                        continue; //We only accept full 8 byte data because we know that everything else is not relevant
+            uint32_t alerts = 0;
+            if (twai_read_alerts(&alerts, 0) == ESP_OK) {
+                  if (alerts & TWAI_ALERT_BUS_OFF) {
+                        Serial.println("[IO] Central Bus-Off! Recovering...");
+                        twai_initiate_recovery();
+                  }
+                  if (alerts & TWAI_ALERT_BUS_RECOVERED) {
+                        twai_start();
+                  }
+                  if (alerts & TWAI_ALERT_RX_QUEUE_FULL) {
+                        twai_clear_receive_queue();
+                  }
+            }
+
+            if (twai_receive(&rx_msg, pdMS_TO_TICKS(50)) == ESP_OK) {
+                  // Ignore extended, remote (RTR), or non-8-byte frames
+                  if (rx_msg.extd || rx_msg.rtr || rx_msg.data_length_code != 8) {
+                        continue;
                   }
 
                   uint16_t base_id = (uint16_t)(rx_msg.identifier - (rx_msg.identifier % 10));
                   uint8_t msg_type = (uint8_t)(rx_msg.identifier % 10);
 
-                  int p_idx = getPeripheralIndex(base_id); // Check if this is a device we are configured to listen to
+                  int p_idx = getPeripheralIndex(base_id);
                   if (p_idx == -1) continue;
 
-                  active_can_channel[p_idx] = true; // Set the channel to active
+                  active_can_channel[p_idx] = true;
 
                   float f1, f2;
                   memcpy(&f1, &rx_msg.data[0], sizeof(float));
@@ -205,8 +219,25 @@ void SixthSense_IO::receiveTask() {
 }
 
 inline void SixthSense_IO::sendCANMessage(uint16_t msg_id, float f1, float f2) {
-      // Lean transmission: 11-bit standard frame, 0 timeout (drop if TX buffer full)
-      twai_message_t tx_msg;
+      // Check if peripheral fell into Bus-Off during startup / cable transient
+      uint32_t alerts = 0;
+      if (twai_read_alerts(&alerts, 0) == ESP_OK) {
+            if (alerts & TWAI_ALERT_BUS_OFF) {
+                  Serial.println("[IO] Peripheral Bus-Off detected! Initiating recovery...");
+                  twai_initiate_recovery();
+                  return;
+            }
+            if (alerts & TWAI_ALERT_BUS_RECOVERED) {
+                  twai_start();
+                  Serial.println("[IO] Peripheral Bus Recovered and Restarted.");
+            }
+            if (alerts & TWAI_ALERT_RX_QUEUE_FULL) {
+                  twai_clear_receive_queue();
+            }
+      }
+
+      // CRITICAL FIX: Zero-initialize struct so .ss (single-shot) and .self (loopback) are guaranteed 0!
+      twai_message_t tx_msg = {};
       tx_msg.identifier = msg_id;
       tx_msg.data_length_code = 8;
       tx_msg.extd = 0;
@@ -215,8 +246,8 @@ inline void SixthSense_IO::sendCANMessage(uint16_t msg_id, float f1, float f2) {
       memcpy(&tx_msg.data[0], &f1, sizeof(float));
       memcpy(&tx_msg.data[4], &f2, sizeof(float));
 
+      // Use a small 1-tick timeout or 0; since tx_queue_len = 32, 0 is fine for up to 8 frames/cycle
       twai_transmit(&tx_msg, 0);
-      //twai_transmit(&tx_msg, pdMS_TO_TICKS(1));//Wait up to 3ms before timeout
 }
 
 int SixthSense_IO::getPeripheralIndex(uint16_t base_id) {
