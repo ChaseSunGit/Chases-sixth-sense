@@ -21,9 +21,13 @@ void setup() {
       Fusion_Config_t fusion_cfg;
       IO_Config_t io_cfg;
 
-      configManager.begin(icm_cfg, mmc_cfg, fusion_cfg, io_cfg);
+      configManager.begin(icm_cfg, mmc_cfg, fusion_cfg, io_cfg);//Load in config stored in flash memory
 
       imu.sensor_init(icm_cfg, mmc_cfg, fusion_cfg);
+
+      // Allow ESP32-S3 boot spike to settle into low steady-state current
+      // Stagger by CAN ID so multiple peripherals don't burst simultaneously
+      vTaskDelay(pdMS_TO_TICKS(200 + (io_cfg.local_can_id % 100) * 50));
 
       ioModule.begin(io_cfg);
 

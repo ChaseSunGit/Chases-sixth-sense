@@ -136,7 +136,7 @@ bool SixthSense_IMU::sensor_init(const ICM_Config_t &icm_cfg, const MMC_Config_t
                   // Configure x-io AHRS settings based on initialization
             FusionAhrsSettings settings = {
                   .sampleRate = sample_rate,
-                  .convention = FusionConventionNwu,
+                  .convention = FusionConventionNed,
                   .gain = fusion_cfg.fusion_gain,
                   .gyroscopeRange = gyro_dps_range,
                   .accelerationRejection = fusion_cfg.accel_rejection,

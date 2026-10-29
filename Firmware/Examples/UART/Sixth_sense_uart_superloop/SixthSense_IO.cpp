@@ -219,7 +219,6 @@ void SixthSense_IO::receiveTask() {
 }
 
 inline void SixthSense_IO::sendCANMessage(uint16_t msg_id, float f1, float f2) {
-      // Check if peripheral fell into Bus-Off during startup / cable transient
       uint32_t alerts = 0;
       if (twai_read_alerts(&alerts, 0) == ESP_OK) {
             if (alerts & TWAI_ALERT_BUS_OFF) {
@@ -262,21 +261,39 @@ void SixthSense_IO::printUARTData() {
       
       for (int i = 0; i < 6; i++) {
             if (!active_can_channel[i]) continue;
-            Serial.printf("%u",current_ms);
             switch (i) {
-            case 0: Serial.printf(",PL"); break;
-            case 1: Serial.printf(",LT"); break;
-            case 2: Serial.printf(",LS"); break;
-            case 3: Serial.printf(",RT"); break;
-            case 4: Serial.printf(",RS"); break;
-            case 5: Serial.printf(",BC"); break;
+            case 0: Serial.printf("PL"); break;
+            case 1: Serial.printf("LT"); break;
+            case 2: Serial.printf("LS"); break;
+            case 3: Serial.printf("RT"); break;
+            case 4: Serial.printf("RS"); break;
+            case 5: Serial.printf("BC"); break;
             default: break;
             }
             
             Fusion_Data_t &d = can_network_imu_data[i];
 
             if (io_config.write_accelGyro) {
-                  Serial.printf(",%.4f,%.4f,%.4f,%.4f,%.4f,%.4f", d.accel[0]*GRAVITY_ICM,d.accel[1]*GRAVITY_ICM,d.accel[2]*GRAVITY_ICM,d.gyro[0]*DEG2RAD_ICM,d.gyro[1]*DEG2RAD_ICM,d.gyro[2]*DEG2RAD_ICM);
+                  Serial.printf(",%.4f,%.4f,%.4f,%.6f,%.6f,%.6f", d.accel[0]*GRAVITY_ICM,d.accel[1]*GRAVITY_ICM,d.accel[2]*GRAVITY_ICM,d.gyro[0]*DEG2RAD_ICM,d.gyro[1]*DEG2RAD_ICM,d.gyro[2]*DEG2RAD_ICM);
+
+                  Serial.print(",");
+                  /*
+                  //Pump binary
+                  float payload[6] = {
+                        (float)(d.accel[0] * GRAVITY_ICM),
+                        (float)(d.accel[1] * GRAVITY_ICM),
+                        (float)(d.accel[2] * GRAVITY_ICM),
+                        (float)(d.gyro[0] * DEG2RAD_ICM),
+                        (float)(d.gyro[1] * DEG2RAD_ICM),
+                        (float)(d.gyro[2] * DEG2RAD_ICM)
+                  };
+
+                  Serial.write((const uint8_t*)&current_ms, sizeof(current_ms));
+                  // Write the entire array as raw bytes
+                  Serial.write((const uint8_t*)payload, sizeof(payload));
+                  //Serial.println();
+                  */
+
             }
             if (io_config.write_mag) {
                   Serial.printf(",%.4f,%.4f,%.4f", d.mag[0], d.mag[1], d.mag[2]);

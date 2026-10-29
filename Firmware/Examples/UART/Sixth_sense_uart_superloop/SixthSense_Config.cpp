@@ -96,6 +96,10 @@ void SixthSense_Config::enterConfigMode() {
       
       loadConfigs(icm_cfg, mmc_cfg, fusion_cfg, io_cfg); // Load the configs from memory
 
+      bool icm_currently_en = icm_cfg.chip_enable;
+      bool mmc_currently_en = mmc_cfg.chip_enable;
+      //Store these freshly loaded values to track if sensors are actually enabled before allowing calibration
+
       printMainMenu();
 
       bool inConfig = true;
@@ -136,27 +140,43 @@ void SixthSense_Config::enterConfigMode() {
                               } else if (cmdBuffer == "io") {
                                     ioMenu(io_cfg);
                               } else if (cmdBuffer == "cal_accel") {
-                                    Serial.println("Calibrating accelerometer - lay sensor flat...");
-                                    for (int i = 2; i > 0; i--) {
-                                          Serial.printf("Starting in %d...\n", i);
-                                          vTaskDelay(pdMS_TO_TICKS(1000));
+                                    if (icm_currently_en){
+                                          Serial.println("Calibrating accelerometer - lay sensor flat...");
+                                          for (int i = 2; i > 0; i--) {
+                                                Serial.printf("Starting in %d...\n", i);
+                                                vTaskDelay(pdMS_TO_TICKS(1000));
+                                          }
+                                          while (Serial.available()) Serial.read(); // Flush stray keystrokes
+                                          imu->calibrateAccel(); 
+                                          Serial.println("Calibration completed. Use 'exit_save' to commit to memory.");
                                     }
-                                    while (Serial.available()) Serial.read(); // Flush stray keystrokes
-                                    imu->calibrateAccel(); 
-                                    Serial.println("Calibration completed. Use 'exit_save' to commit to memory.");
+                                    else{
+                                          Serial.println("Accelerometer disabled. Set ICM to enable and save and exit before calibrating.");
+                                    }                                    
                               } else if (cmdBuffer == "cal_gyro") {
-                                    Serial.println("Calibrating gyroscope - lay sensor flat and still...");
-                                    for (int i = 2; i > 0; i--) {
-                                          Serial.printf("Starting in %d...\n", i);
-                                          vTaskDelay(pdMS_TO_TICKS(1000));
+                                    if (icm_currently_en){
+                                          Serial.println("Calibrating gyroscope - lay sensor flat and still...");
+                                          for (int i = 2; i > 0; i--) {
+                                                Serial.printf("Starting in %d...\n", i);
+                                                vTaskDelay(pdMS_TO_TICKS(1000));
+                                          }
+                                          while (Serial.available()) Serial.read(); // Flush stray keystrokes
+                                          imu->calibrateGyro(); 
+                                          Serial.println("Calibration completed. Use 'exit_save' to commit to memory.");
                                     }
-                                    while (Serial.available()) Serial.read(); // Flush stray keystrokes
-                                    imu->calibrateGyro(); 
-                                    Serial.println("Calibration completed. Use 'exit_save' to commit to memory.");
+                                    else{
+                                          Serial.println("Gyroscope disabled. Set ICM to enable and save and exit before calibrating.");
+                                    }
                               } else if (cmdBuffer == "cal_mag") {
-                                    Serial.println("Calibrating magnetometer - move sensor in figure 8 fashion...");
-                                    imu->calibrateMag(); 
-                                    Serial.println("Calibration completed. Use 'exit_save' to commit to memory.");
+                                    if (mmc_currently_en){
+                                          Serial.println("Calibrating magnetometer - move sensor in figure 8 fashion...");
+                                          imu->calibrateMag(); 
+                                          Serial.println("Calibration completed. Use 'exit_save' to commit to memory.");
+                                    }
+                                    else{
+                                          Serial.println("Magnetometer disabled. Set MMC to enable and save and exit before calibrating.");
+                                    }
+                                    
                               } else if (cmdBuffer == "display_cal") {
                                     displayCalibration();
                               } else if (cmdBuffer == "factory_reset") {

@@ -428,7 +428,7 @@ bool MMC5983MA::Evaluate_Calibration_Quality(const std::vector<float>& raw_x, co
       float norm_error = std_r / mean_r;
 
       Serial.printf("[MMC] Fit Mean Radius: %.4f G, Relative Error: %.2f%%\n", mean_r, norm_error * 100.0f);
-      return (norm_error < 0.02f);
+      return (norm_error < 0.03f);
 }
 
 /**

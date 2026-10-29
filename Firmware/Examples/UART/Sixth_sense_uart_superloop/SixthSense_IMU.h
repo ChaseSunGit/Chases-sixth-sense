@@ -58,7 +58,7 @@ public:
       // Pass-throughs for explicit Subclass Functionality
       bool calibrateAccel(int num_samples = 2000);
       bool calibrateGyro(int num_samples = 2000);
-      bool calibrateMag(uint8_t num_seconds = 6, uint8_t num_timeout = 36);
+      bool calibrateMag(uint8_t num_seconds = 10, uint8_t num_timeout = 40);
 
       // Read settings
       bool readICMconfig();
