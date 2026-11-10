@@ -136,7 +136,12 @@ void SixthSense_IO::transmitTask() {
 
                   // Check what the device mode is configured to be
                   if ( io_config.mode == NODE_CENTRAL ) {
-                        printUARTData();
+                        if (io_config.verbose_uart){
+                              printUARTData();
+                        }
+                        else {
+                              printBinaryData();//print raw binary to allow for more sig figs over less bytes transmitted
+                        }
                   } else if ( io_config.mode == NODE_PERIPHERAL ) {
                         // Transmit configured CAN messages
                         if (io_config.write_accelGyro) {
@@ -335,6 +340,106 @@ void SixthSense_IO::printUARTData_Debug() {
       // Non-blocking memory check
       //Serial.printf("[MEM] Free Heap: %u bytes | Min Free Ever: %u bytes | Largest Free Block: %u bytes\n",esp_get_free_heap_size(), esp_get_minimum_free_heap_size(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
       
+}
+
+void SixthSense_IO::printBinaryData() {
+      // Create a local buffer. Max size is 7 (header+time) + (6 sensors * 66 bytes) + 1 (crc) = 404 bytes.
+      uint8_t tx_buf[512]; 
+      uint16_t offset = 0;
+
+      // 1. Calculate active sensors
+      uint8_t active_count = 0;
+      for (int i = 0; i < 6; i++) {
+            if (active_can_channel[i]) active_count++;
+      }
+      if (active_count > 15) active_count = 15; //Max 15 sensors for the binary counter, but only 6 can be allowed to run to save can bus time
+
+      // 2. Build Info Byte
+      uint8_t flags = 0;
+      if (io_config.write_accelGyro) flags |= (1 << 0);
+      if (io_config.write_mag)       flags |= (1 << 1);
+      if (io_config.write_euler)     flags |= (1 << 2);
+      if (io_config.write_quat)      flags |= (1 << 3);
+
+      uint8_t info_byte = (active_count << 4) | (flags & 0x0F);
+
+      // 3. Write Magic Word (0xFD, 0xAC), Info Byte, and Timestamp
+      tx_buf[offset++] = 0xFD;
+      tx_buf[offset++] = 0xAC;
+      tx_buf[offset++] = info_byte;
+
+      uint32_t current_ms = millis();
+      memcpy(&tx_buf[offset], &current_ms, sizeof(current_ms));
+      offset += sizeof(current_ms);
+
+      // 4. Output sensor data sequentially
+      for (int i = 0; i < 6; i++) {
+            uint16_t sensor_id;
+
+            if (!active_can_channel[i]) continue; // No active channels, just don't output anything
+
+            // Sensor ID (2 bytes, using CAN ID)
+            if (i == 0){
+                  //The central node, use its own CAN id
+                  sensor_id = io_config.local_can_id;
+            }
+            else {
+                  sensor_id = io_config.peripheral_can_ids[i - 1];
+            }
+
+            memcpy(&tx_buf[offset], &sensor_id, sizeof(sensor_id)); //write two bytes of can id (default 11-bit)
+            offset += sizeof(sensor_id);
+
+            Fusion_Data_t &d = can_network_imu_data[i];
+
+            // AccelGyro (6 floats -> 24 bytes)
+            if (io_config.write_accelGyro) {
+                  float ag[6] = {
+                        (float)(d.accel[0] * GRAVITY_ICM),
+                        (float)(d.accel[1] * GRAVITY_ICM),
+                        (float)(d.accel[2] * GRAVITY_ICM),
+                        (float)(d.gyro[0] * DEG2RAD_ICM),
+                        (float)(d.gyro[1] * DEG2RAD_ICM),
+                        (float)(d.gyro[2] * DEG2RAD_ICM)
+                  };
+                  memcpy(&tx_buf[offset], ag, sizeof(ag));
+                  offset += sizeof(ag);
+            }
+
+            // Mag (3 floats -> 12 bytes)
+            if (io_config.write_mag) {
+                  float m[3] = { (float)d.mag[0], (float)d.mag[1], (float)d.mag[2] };
+                  memcpy(&tx_buf[offset], m, sizeof(m));
+                  offset += sizeof(m);
+            }
+
+            // Eulers (3 floats -> 12 bytes)
+            if (io_config.write_euler) {
+                  float eu[3] = { (float)d.roll, (float)d.pitch, (float)d.yaw };
+                  memcpy(&tx_buf[offset], eu, sizeof(eu));
+                  offset += sizeof(eu);
+            }
+
+            // Quat (4 floats -> 16 bytes)
+            if (io_config.write_quat) {
+                  float q[4] = { (float)d.q[0], (float)d.q[1], (float)d.q[2], (float)d.q[3] };
+                  memcpy(&tx_buf[offset], q, sizeof(q));
+                  offset += sizeof(q);
+            }
+      }
+
+      // 5. Calculate XOR Checksum 
+      // It iterates through the payload excluding the 2-byte magic word (starting at index 2).
+      uint8_t checksum = 0;
+      for (uint16_t j = 2; j < offset; j++) {
+            checksum ^= tx_buf[j];
+      }
+      
+      // Append checksum to the end of the buffer
+      tx_buf[offset++] = checksum;
+
+      // 6. Transmit the complete packed buffer in one shot
+      Serial.write(tx_buf, offset);
 }
 
 void SixthSense_IO::returnDefaultConfig(IO_Config_t &io_config) {

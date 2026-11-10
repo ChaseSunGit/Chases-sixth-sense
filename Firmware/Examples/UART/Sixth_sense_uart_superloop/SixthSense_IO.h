@@ -72,6 +72,7 @@ private:
       inline void sendCANMessage(uint16_t msg_id, float f1, float f2);
       void printUARTData();
       void printUARTData_Debug();
+      void printBinaryData();
       int getPeripheralIndex(uint16_t base_id);
 
       uint32_t lastTime_millis;
