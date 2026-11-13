@@ -13,13 +13,14 @@
 #include <nvs.h>
 #include "SixthSense_IMU.h"
 #include "SixthSense_IO.h"
+#include "SixthSense_Wireless.h"
 
 class SixthSense_Config {
 public:
       SixthSense_Config(SixthSense_IMU* imu_ptr, SixthSense_IO* io_ptr);
 
       // Initialize NVS. If no data exists, it generates defaults and writes them.
-      bool begin(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg, IO_Config_t &io_cfg);
+      bool begin(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg, IO_Config_t &io_cfg, Wireless_Config_t &w_cfg);
 
       // Lifecycle & Task Management
       bool RTOS_startConfigTask(BaseType_t core_id = 1, UBaseType_t priority = 1);//Low priority task used to monitor UART function
@@ -33,8 +34,8 @@ private:
       nvs_handle_t imu_config_handle;
       
       // NVS Read/Write wrappers
-      bool loadConfigs(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg, IO_Config_t &io_cfg);
-      bool saveConfigs(const ICM_Config_t &icm_cfg, const MMC_Config_t &mmc_cfg, const Fusion_Config_t &fusion_cfg, const IO_Config_t &io_cfg);
+      bool loadConfigs(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg, IO_Config_t &io_cfg, Wireless_Config_t &w_cfg);
+      bool saveConfigs(const ICM_Config_t &icm_cfg, const MMC_Config_t &mmc_cfg, const Fusion_Config_t &fusion_cfg, const IO_Config_t &io_cfg, const Wireless_Config_t &w_cfg);
       
       bool loadCalibration();
       bool saveCalibration();
@@ -42,7 +43,7 @@ private:
       void displayCalibration();
 
       // Resets configs to default, zeros calibrations, and saves to NVS
-      void factoryReset(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg, IO_Config_t &io_cfg);
+      void factoryReset(ICM_Config_t &icm_cfg, MMC_Config_t &mmc_cfg, Fusion_Config_t &fusion_cfg, IO_Config_t &io_cfg, Wireless_Config_t &w_cfg);
 
       // Blocking configuration menu loops
       void enterConfigMode();
@@ -53,6 +54,7 @@ private:
       void magMenu(MMC_Config_t &mmc_cfg);
       void fusionMenu(Fusion_Config_t &fusion_cfg);
       void ioMenu(IO_Config_t &io_cfg);
+      void wirelessMenu(Wireless_Config_t &w_cfg);
 
       // FreeRTOS Task Handle & Trampoline
       TaskHandle_t config_task_handle = NULL;

@@ -92,6 +92,13 @@ bool MMC5983MA::check_config_validity(const MMC_Config_t &config) {
 void MMC5983MA::parse_config(const MMC_Config_t &config) {
 
       Serial.println("--- MMC5983MA Current Configuration ---");
+
+      if (config.chip_enable) {
+            Serial.println("MMC chip enabled, magnetometer will be used for fusion algorithm.");
+      }
+      else {
+            Serial.println("MMC chip disabled.");
+      }
       
       if (config.outputRate >= 1 && config.outputRate <= 7) {
             Serial.printf("Output Data Rate: %d Hz\n", freq_table[config.outputRate - 1]);

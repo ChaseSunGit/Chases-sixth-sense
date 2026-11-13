@@ -1,6 +1,8 @@
 /**
  * \file SixthSense_IMU.h
  * \brief Unified wrapper for ICM42607 and MMC5983MA with x-io Fusion integration.
+ *
+ * \author    Chase Sun
  */
 
 #ifndef SIXTHSENSE_IMU_H
@@ -84,14 +86,28 @@ public:
 
       //RTOS start the sensor handling task
       bool RTOS_startReadingTask(BaseType_t core_id = 1, UBaseType_t priority = 5);
-      void RTOS_suspendReading() { if(imu_task_handle) vTaskSuspend(imu_task_handle); }
-      void RTOS_resumeReading() { if(imu_task_handle) vTaskResume(imu_task_handle); }\
+      void RTOS_suspendReading();
+      void RTOS_resumeReading();
       //Set output queue path
       void setOutputQueue(QueueHandle_t queue) { output_queue = queue; }
 
 private:
       ICM42607 icm;
       MMC5983MA mmc;
+
+      struct SensorMutexGuard { // a private struct used as a guard for the sensor mutex. The destructor of the struct makes sure that the process data function always yields the semaphore no matter how it exits
+            SemaphoreHandle_t mtx;
+            bool locked;
+            SensorMutexGuard(SemaphoreHandle_t m, TickType_t timeout) : mtx(m) {
+                  locked = (mtx != NULL && xSemaphoreTake(mtx, timeout) == pdTRUE); // returns true when mutex is available to take
+            }
+            ~SensorMutexGuard() {
+                  if (locked) xSemaphoreGive(mtx); // this destructor will always run when this mutex guard goes out of scope to release the semaphore when measurements are not actively being taken
+            }
+      };
+
+      SemaphoreHandle_t sensor_mutex = NULL; // data process mutex to ensure config does not trigger when sensor is mid measurement
+      volatile bool reading_paused = false;
 
       Fusion_Data_t data_holder;
 

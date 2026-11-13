@@ -1,6 +1,8 @@
 /**
  * \file SixthSense_IMU.cpp
  * \brief Implementation of the unified SixthSense_IMU wrapper.
+ *
+ * \author    Chase Sun
  */
 
 #include "SixthSense_IMU.h"
@@ -15,6 +17,7 @@ SixthSense_IMU::SixthSense_IMU()
       
       
       instance = this;//initialize object for ISR since it cannot access the hidden "this" object in function argument
+      sensor_mutex = xSemaphoreCreateMutex(); // mutex for protecting processing against config interruption
 }
 
 //ISR for data ready interrupt from chip
@@ -160,7 +163,20 @@ bool SixthSense_IMU::sensor_init(const ICM_Config_t &icm_cfg, const MMC_Config_t
       return fusion_enabled;
 }
 
+
 bool SixthSense_IMU::processSensorData() {
+      // Do not touch the bus if config mode has requested a pause
+      if (reading_paused) {
+            new_data_ready = false;
+            return false;
+      }
+
+      // Acquire exclusive bus ownership for this sample; skip if config holds it
+      SensorMutexGuard lock(sensor_mutex, 0); // the constructor of the struct checks if mutex is available, takes it and returns true
+      if (!lock.locked) { // if we cannot lock down the mutex because its not available
+            return false; // do not attempt to process data because config has the mutex
+      }
+
       new_data_ready = false;
       //New data ready can be used with superloop if the rtos object is not initalized
       //Just continuously poll new_data_ready in loop and if true run processSensorData
@@ -368,7 +384,6 @@ bool SixthSense_IMU::RTOS_startReadingTask(BaseType_t core_id, UBaseType_t prior
       return (result == pdPASS);
 }
 
-// T
 void SixthSense_IMU::IMU_Task_Trampoline(void *pvParameters) {
       // Cast the void pointer back to our object instance
       SixthSense_IMU *imu = static_cast<SixthSense_IMU*>(pvParameters);
@@ -381,4 +396,18 @@ void SixthSense_IMU::IMU_Task_Trampoline(void *pvParameters) {
             // Fetch and process data
             imu->processSensorData();
       }
+}
+
+void SixthSense_IMU::RTOS_suspendReading() {
+      // 1. Tell IMU_Task to stop starting new reads
+      reading_paused = true;
+
+      // 2. Wait up to 200ms for any currently running processSensorData() call to finish
+      if (sensor_mutex != NULL && xSemaphoreTake(sensor_mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+            xSemaphoreGive(sensor_mutex);
+      }
+}
+
+void SixthSense_IMU::RTOS_resumeReading() {
+      reading_paused = false;
 }
