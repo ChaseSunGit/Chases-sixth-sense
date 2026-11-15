@@ -776,6 +776,9 @@ void SixthSense_Config::wirelessMenu(Wireless_Config_t &w_cfg) {
       Serial.println("                                11 = 54M  (802.11g OFDM)");
       Serial.println("                                19 = MCS7 (802.11n HT20 ~65-72.2 Mbps)");
       Serial.println("  lr_mode <0-1>       - Long Range Mode: 0 (24Mbps OFDM, default), 1 (LR mode / 6Mbps)");
+      Serial.println("  wifi_debug <0-1>    - Print debug messages for wireless mode.");
+      Serial.println("                          In central mode, print total dropouts per channel");
+      Serial.println("                          In peripheral mode, print connectivity debug message");
 
       String cmdBuffer = "";
 
@@ -798,6 +801,7 @@ void SixthSense_Config::wirelessMenu(Wireless_Config_t &w_cfg) {
                                     Serial.printf("  TX Power    : %d (%.2f dBm)\n", w_cfg.tx_power_quarter_dbm, w_cfg.tx_power_quarter_dbm * 0.25f);
                                     Serial.printf("  PHY Rate    : %d\n", (int)w_cfg.phy_rate);
                                     Serial.printf("  LR Mode     : %d\n", w_cfg.enable_long_range_mode);
+                                    Serial.printf("  Wifi debug  : %d\n", w_cfg.enable_wireless_debug);
                               } else if (cmdBuffer.startsWith("set ")) {
                                     int spaceIdx = cmdBuffer.lastIndexOf(' ');
                                     if (spaceIdx <= 4) {
@@ -830,6 +834,13 @@ void SixthSense_Config::wirelessMenu(Wireless_Config_t &w_cfg) {
                                                       w_cfg.enable_long_range_mode = (val != 0);
                                                       w_cfg.phy_rate = w_cfg.enable_long_range_mode ? WIFI_PHY_RATE_6M : WIFI_PHY_RATE_24M;
                                                       Serial.printf("Staged LR Mode set to %d\n", w_cfg.enable_long_range_mode);
+                                                }
+                                          } else if (param == "wifi_debug") {
+                                                if (val < 0 || val > 1) {
+                                                      Serial.println("Value must be 0 or 1.");
+                                                } else {
+                                                      w_cfg.enable_wireless_debug = (val != 0);
+                                                      Serial.printf("Staged wifi debug enable set to %d\n", w_cfg.enable_wireless_debug);
                                                 }
                                           } else {
                                                 Serial.println("Unknown parameter.");

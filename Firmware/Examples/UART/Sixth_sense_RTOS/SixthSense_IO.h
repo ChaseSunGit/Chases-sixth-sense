@@ -71,6 +71,7 @@ private:
       bool wireless_mode_enabled = false;
       volatile bool tx_paused = false; // used for tracking led heartbeat task
       volatile uint32_t last_tx_activity_ms = 0;
+      bool wifi_debug = false;
 
       QueueHandle_t imu_data_queue = NULL;
 
@@ -103,6 +104,20 @@ private:
 
       uint32_t lastTime_millis = 0;
       uint16_t adc_sample_counter = 0;
+
+      // Dropout tracking metrics
+      uint32_t channel_total_expected[TOTAL_NETWORK_NODES];
+      uint32_t channel_total_dropouts[TOTAL_NETWORK_NODES];
+      uint32_t channel_last_timestamp[TOTAL_NETWORK_NODES];
+      uint32_t channel_repeat_count[TOTAL_NETWORK_NODES];
+
+      // 10-second moving window at 200Hz = 2000 samples (250 bytes per channel)
+      static const uint32_t WINDOW_SIZE_BITS = 2000;
+      static const uint32_t WINDOW_SIZE_BYTES = 250; 
+      uint8_t channel_window_buffer[TOTAL_NETWORK_NODES][WINDOW_SIZE_BYTES];
+      uint32_t channel_window_head[TOTAL_NETWORK_NODES];
+      uint32_t channel_window_dropouts[TOTAL_NETWORK_NODES];
+      uint32_t channel_window_expected[TOTAL_NETWORK_NODES];
 };
 
 #endif // SIXTHSENSE_IO_H

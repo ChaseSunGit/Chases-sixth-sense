@@ -378,6 +378,8 @@ size_t MMC5983MA::MMC_Read_Block(uint8_t block_seconds, std::vector<float>& x_ou
                         z_out.push_back(data_holder.mag[2]);
                         samples_read++;
                   }
+            } else {
+                  delay(1); // Prevent starving FreeRTOS IDLE/watchdog tasks
             }
       }
       return samples_read;
@@ -406,9 +408,8 @@ bool MMC5983MA::Evaluate_Calibration_Quality(const std::vector<float>& raw_x, co
             return false;
       }
 
+      // First pass: calculate mean radius without allocating a vector
       float sum_r = 0.0f;
-      std::vector<float> r_vals(n);
-
       for (size_t i = 0; i < n; ++i) {
             float dx = raw_x[i] - offset[0];
             float dy = raw_y[i] - offset[1];
@@ -416,21 +417,29 @@ bool MMC5983MA::Evaluate_Calibration_Quality(const std::vector<float>& raw_x, co
 
             float cx = W[0][0]*dx + W[0][1]*dy + W[0][2]*dz;
             float cy = W[1][0]*dx + W[1][1]*dy + W[1][2]*dz;
-            float cz = W[2][0]*dx + W[2][1]*dz + W[2][2]*dz;
+            float cz = W[2][0]*dx + W[2][1]*dy + W[2][2]*dz; // Fixed dy typo
 
-            float r = sqrtf(cx*cx + cy*cy + cz*cz);
-            r_vals[i] = r;
-            sum_r += r;
+            sum_r += sqrtf(cx*cx + cy*cy + cz*cz);
       }
 
       float mean_r = sum_r / (float)n;
       if (mean_r < 0.05f) return false;
 
+      // Second pass: calculate variance
       float var_sum = 0.0f;
       for (size_t i = 0; i < n; ++i) {
-            float diff = r_vals[i] - mean_r;
+            float dx = raw_x[i] - offset[0];
+            float dy = raw_y[i] - offset[1];
+            float dz = raw_z[i] - offset[2];
+
+            float cx = W[0][0]*dx + W[0][1]*dy + W[0][2]*dz;
+            float cy = W[1][0]*dx + W[1][1]*dy + W[1][2]*dz;
+            float cz = W[2][0]*dx + W[2][1]*dy + W[2][2]*dz;
+
+            float diff = sqrtf(cx*cx + cy*cy + cz*cz) - mean_r;
             var_sum += diff * diff;
       }
+
       float std_r = sqrtf(var_sum / (float)n);
       float norm_error = std_r / mean_r;
 
@@ -457,6 +466,11 @@ bool MMC5983MA::Calibrate_Full_Soft_Hard_Iron(uint8_t num_seconds, uint8_t num_t
       std::vector<float> all_x;
       std::vector<float> all_y;
       std::vector<float> all_z;
+
+      size_t max_expected_samples = (size_t)(num_timeout + num_seconds) * (ODR > 0 ? ODR : 200);
+      all_x.reserve(max_expected_samples);
+      all_y.reserve(max_expected_samples);
+      all_z.reserve(max_expected_samples);
 
       uint32_t start_time = millis();
       uint32_t timeout_ms = (uint32_t)num_timeout * 1000;

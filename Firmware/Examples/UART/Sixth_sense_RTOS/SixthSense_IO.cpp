@@ -12,6 +12,16 @@ SixthSense_IO::SixthSense_IO() {
       memset(network_imu_data, 0, sizeof(network_imu_data));
       memset(network_soc_data, 0, sizeof(network_soc_data));
       memset(network_active_channel, 0, sizeof(network_active_channel)); // set all channels to inactive
+
+      // Initialize dropout tracking
+      memset(channel_total_expected, 0, sizeof(channel_total_expected));
+      memset(channel_total_dropouts, 0, sizeof(channel_total_dropouts));
+      memset(channel_last_timestamp, 0, sizeof(channel_last_timestamp));
+      memset(channel_repeat_count, 0, sizeof(channel_repeat_count));
+      memset(channel_window_buffer, 0, sizeof(channel_window_buffer));
+      memset(channel_window_head, 0, sizeof(channel_window_head));
+      memset(channel_window_dropouts, 0, sizeof(channel_window_dropouts));
+      memset(channel_window_expected, 0, sizeof(channel_window_expected));
 }
 
 bool SixthSense_IO::begin(const IO_Config_t &config, const Wireless_Config_t &wireless_config) {
@@ -47,6 +57,8 @@ bool SixthSense_IO::begin(const IO_Config_t &config, const Wireless_Config_t &wi
             }
       }
 
+      wifi_debug = wireless_config.enable_wireless_debug; //allow this option for both wired and wireless mode for sensor packet drop measurements
+
       if (wireless_mode_enabled) {
             Serial.println("[IO] WIRELESS (ESP-NOW) mode.");
             return wireless.begin(
@@ -55,8 +67,7 @@ bool SixthSense_IO::begin(const IO_Config_t &config, const Wireless_Config_t &wi
                   io_config.peripheral_can_ids,
                   io_config.num_peripherals
             );
-      } 
-      else {
+      } else {
             Serial.println("[IO] WIRED (TWAI CAN) mode.");
 
             twai_general_config_t twai_g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TWAI_TX, CAN_TWAI_RX, TWAI_MODE_NORMAL);
@@ -202,7 +213,7 @@ void SixthSense_IO::transmitTask() {
 
                   network_imu_data[0] = local_imu_data;
                   network_imu_data[0].msTimeStamp = millis();//Get current timestamp
-                  network_soc_data[0] = wireless.getSoCVoltage();
+                  network_soc_data[0] = wireless.getSoCPercent();
                   uint16_t base = io_config.local_can_id;
 
                   if (io_config.mode == NODE_CENTRAL) {
@@ -304,7 +315,7 @@ void SixthSense_IO::receiveTask() {
                         if (p_idx == -1) continue;
 
                         network_active_channel[p_idx] = true;
-                        network_soc_data[p_idx] = 0.0f; // Always 0 during wired operation
+                        network_soc_data[p_idx] = 0; // Always 0 during wired operation
 
                         float f1, f2;
                         memcpy(&f1, &rx_msg.data[0], sizeof(float));
@@ -411,6 +422,56 @@ void SixthSense_IO::printUARTData() {
             Serial.print(node_labels[i]);
 
             Fusion_Data_t &d = network_imu_data[i];
+
+            // Evaluate wireless packet drops and print debug data
+            if (wifi_debug) {
+                  // Track consecutive reads of the exact same timestamp
+                  if (d.msTimeStamp == channel_last_timestamp[i]) {
+                        channel_repeat_count[i]++;
+                  } else {
+                        channel_last_timestamp[i] = d.msTimeStamp;
+                        channel_repeat_count[i] = 1; // First time seeing this packet
+                  }
+
+                  // Ignore 1st read (count == 1) and single clock-drift slip (count == 2)
+                  bool is_dropout = (channel_repeat_count[i] >= 3);
+
+                  // Update Totals
+                  channel_total_expected[i]++;
+                  if (is_dropout) channel_total_dropouts[i]++;
+
+                  // Update 10-second window buffer
+                  uint32_t head = channel_window_head[i];
+                  uint32_t byte_idx = head / 8;
+                  uint8_t bit_idx = head % 8;
+
+                  if (channel_window_expected[i] < WINDOW_SIZE_BITS) {
+                        channel_window_expected[i]++;
+                  } else {
+                        // Window is full, remove the oldest bit from our rolling dropout count
+                        bool old_bit = (channel_window_buffer[i][byte_idx] & (1 << bit_idx)) != 0;
+                        if (old_bit) channel_window_dropouts[i]--;
+                  }
+
+                  // Write the new bit
+                  if (is_dropout) {
+                        channel_window_buffer[i][byte_idx] |= (1 << bit_idx);
+                        channel_window_dropouts[i]++;
+                  } else {
+                        channel_window_buffer[i][byte_idx] &= ~(1 << bit_idx);
+                  }
+                  
+                  // Advance circular buffer head
+                  channel_window_head[i] = (head + 1) % WINDOW_SIZE_BITS;
+
+                  // Calculate metrics
+                  float total_pct = (float)channel_total_dropouts[i] / channel_total_expected[i] * 100.0f;
+                  float window_pct = (float)channel_window_dropouts[i] / channel_window_expected[i] * 100.0f;
+
+                  Serial.printf(",DBG[Tot:%lu/%lu(%.1f%%) 10s:%lu/%lu(%.1f%%)]", 
+                                channel_total_dropouts[i], channel_total_expected[i], total_pct,
+                                channel_window_dropouts[i], channel_window_expected[i], window_pct);
+            }
 
             if (io_config.write_accelGyro) {
                   Serial.printf(",%.4f,%.4f,%.4f,%.6f,%.6f,%.6f",
