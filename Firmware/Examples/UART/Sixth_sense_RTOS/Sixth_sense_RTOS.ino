@@ -37,12 +37,12 @@ void setup() {
 
       ioModule.begin(io_cfg, wireless_cfg);
 
-      Serial.println("Starting in 2 seconds:");
+      Serial.println("Starting RTOS tasks: sensor should begin outputting immediately");
 
       // Link IO Mailbox to IMU
       imu.setOutputQueue(ioModule.getIMUDataQueue());
 
-      vTaskDelay(pdMS_TO_TICKS(2000));//Give some time for user to read debug message
+      //vTaskDelay(pdMS_TO_TICKS(2000));//Give some time for user to read debug message
 
       digitalWrite(PIN_STATUS_LED, HIGH); //Turn LED off and yield io IO RTOS task to control LED operation
 

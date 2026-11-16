@@ -34,7 +34,7 @@ struct IO_Config_t {
       uint16_t local_can_id;                              // 11-bit Base ID (multiple of 10, max 2040)
       uint16_t peripheral_can_ids[MAX_PERIPHERAL_NODES];  // 11-bit Base IDs for up to 9 peripherals
       int peripheral_timeout;                             // Milliseconds elapsed after valid measurement to mark peripheral inactive, 0 means no timeout
-      uint8_t num_peripherals;                            // Number of configured peripherals (default 5, max 9)
+      uint8_t num_peripherals;                            // Number of configured peripherals (default 4, max 9)
       NodeMode mode;                                      // 0: Central, 1: Peripheral
       bool CAN_1MHZ_en;                                   // Enable 1MHz CAN speed, default enable
       bool write_accelGyro;
@@ -80,6 +80,20 @@ private:
       uint16_t network_soc_data[TOTAL_NETWORK_NODES];
       bool network_active_channel[TOTAL_NETWORK_NODES];
 
+      // Dropout tracking metrics
+      uint32_t channel_total_expected[TOTAL_NETWORK_NODES];
+      uint32_t channel_total_dropouts[TOTAL_NETWORK_NODES];
+      uint32_t channel_last_timestamp[TOTAL_NETWORK_NODES];
+      uint32_t channel_repeat_count[TOTAL_NETWORK_NODES];
+
+      // 10-second moving window at 200Hz = 2000 samples (250 bytes per channel)
+      static const uint32_t WINDOW_SIZE_BITS = 2000;
+      static const uint32_t WINDOW_SIZE_BYTES = 250;
+      uint8_t channel_window_buffer[TOTAL_NETWORK_NODES][WINDOW_SIZE_BYTES];
+      uint32_t channel_window_head[TOTAL_NETWORK_NODES];
+      uint32_t channel_window_dropouts[TOTAL_NETWORK_NODES];
+      uint32_t channel_window_expected[TOTAL_NETWORK_NODES];
+
       TaskHandle_t tx_task_handle = NULL;
       TaskHandle_t rx_task_handle = NULL;
       TaskHandle_t led_task_handle = NULL;
@@ -104,20 +118,6 @@ private:
 
       uint32_t lastTime_millis = 0;
       uint16_t adc_sample_counter = 0;
-
-      // Dropout tracking metrics
-      uint32_t channel_total_expected[TOTAL_NETWORK_NODES];
-      uint32_t channel_total_dropouts[TOTAL_NETWORK_NODES];
-      uint32_t channel_last_timestamp[TOTAL_NETWORK_NODES];
-      uint32_t channel_repeat_count[TOTAL_NETWORK_NODES];
-
-      // 10-second moving window at 200Hz = 2000 samples (250 bytes per channel)
-      static const uint32_t WINDOW_SIZE_BITS = 2000;
-      static const uint32_t WINDOW_SIZE_BYTES = 250; 
-      uint8_t channel_window_buffer[TOTAL_NETWORK_NODES][WINDOW_SIZE_BYTES];
-      uint32_t channel_window_head[TOTAL_NETWORK_NODES];
-      uint32_t channel_window_dropouts[TOTAL_NETWORK_NODES];
-      uint32_t channel_window_expected[TOTAL_NETWORK_NODES];
 };
 
 #endif // SIXTHSENSE_IO_H

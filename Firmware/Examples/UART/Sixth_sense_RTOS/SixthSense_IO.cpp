@@ -34,16 +34,25 @@ bool SixthSense_IO::begin(const IO_Config_t &config, const Wireless_Config_t &wi
       memset(network_imu_data, 0, sizeof(network_imu_data));
       memset(network_soc_data, 0, sizeof(network_soc_data));
       memset(network_active_channel, 0, sizeof(network_active_channel));
+      memset(channel_total_expected, 0, sizeof(channel_total_expected));
+      memset(channel_total_dropouts, 0, sizeof(channel_total_dropouts));
+      memset(channel_last_timestamp, 0, sizeof(channel_last_timestamp));
+      memset(channel_repeat_count, 0, sizeof(channel_repeat_count));
+      memset(channel_window_buffer, 0, sizeof(channel_window_buffer));
+      memset(channel_window_head, 0, sizeof(channel_window_head));
+      memset(channel_window_dropouts, 0, sizeof(channel_window_dropouts));
+      memset(channel_window_expected, 0, sizeof(channel_window_expected));
 
-      if (io_config.listener_mode){
+      if (io_config.listener_mode) {
             network_active_channel[0] = false; // Listen only, do not report local data
       } else {
             network_active_channel[0] = true; // Mark local sensor as active
       }
-      
-      //Check for wireless mode
+
+      // Check for wireless mode
       pinMode(PIN_WIRELESS_SET, INPUT);
       wireless_mode_enabled = digitalRead(PIN_WIRELESS_SET); // high means wireless is set
+      wifi_debug = wireless_config.enable_wireless_debug;
 
       // Configure Status LED
       pinMode(PIN_STATUS_LED, OUTPUT);
@@ -56,8 +65,6 @@ bool SixthSense_IO::begin(const IO_Config_t &config, const Wireless_Config_t &wi
                   return false;
             }
       }
-
-      wifi_debug = wireless_config.enable_wireless_debug; //allow this option for both wired and wireless mode for sensor packet drop measurements
 
       if (wireless_mode_enabled) {
             Serial.println("[IO] WIRELESS (ESP-NOW) mode.");
@@ -208,22 +215,23 @@ void SixthSense_IO::transmitTask() {
                         continue;
                   }
 
-                  // Mark data transfer heartbeat for LED task
-                  last_tx_activity_ms = millis();
-
                   network_imu_data[0] = local_imu_data;
-                  network_imu_data[0].msTimeStamp = millis();//Get current timestamp
+                  network_imu_data[0].msTimeStamp = millis(); // Get current timestamp
                   network_soc_data[0] = wireless.getSoCPercent();
                   uint16_t base = io_config.local_can_id;
 
                   if (io_config.mode == NODE_CENTRAL) {
-                        //Before sending data over uart, mark timed out network peripherals inactive
+                        last_tx_activity_ms = millis();
+
+                        if (wireless_mode_enabled) {
+                              wireless.pollCentralBeacon();
+                        }
+
+                        // Before sending data over uart, mark timed out network peripherals inactive
                         uint32_t current_millis = millis();
-                        for (int i = 0; i <= io_config.num_peripherals; i++){
-                              if (network_active_channel[i] && io_config.peripheral_timeout != 0){
-                                    // if channel is active and if a non zero timeout is set
-                                    // mark the channel as inactive if last read is longer than timeout
-                                    if ( (current_millis - network_imu_data[i].msTimeStamp) > io_config.peripheral_timeout) {
+                        for (int i = 0; i <= io_config.num_peripherals; i++) {
+                              if (network_active_channel[i] && io_config.peripheral_timeout != 0) {
+                                    if ((current_millis - network_imu_data[i].msTimeStamp) > io_config.peripheral_timeout) {
                                           network_active_channel[i] = false;
                                     }
                               }
@@ -235,8 +243,8 @@ void SixthSense_IO::transmitTask() {
                         }
                   } else if (io_config.mode == NODE_PERIPHERAL) {
                         if (wireless_mode_enabled) {
-                              // Low-latency single-packet broadcast at 200Hz
-                              wireless.sendSensorPacket(
+                              // Only transmits once Central's beacon has been caught
+                              bool sent = wireless.sendSensorPacket(
                                     base,
                                     local_imu_data,
                                     network_soc_data[0],
@@ -245,7 +253,11 @@ void SixthSense_IO::transmitTask() {
                                     io_config.write_euler,
                                     io_config.write_quat
                               );
+                              if (sent) {
+                                    last_tx_activity_ms = millis();
+                              }
                         } else {
+                              last_tx_activity_ms = millis();
                               // Wired CAN transmission
                               if (io_config.write_accelGyro) {
                                     sendCANMessage(base + 0, local_imu_data.accel[0], local_imu_data.gyro[0]);
@@ -321,7 +333,6 @@ void SixthSense_IO::receiveTask() {
                         memcpy(&f1, &rx_msg.data[0], sizeof(float));
                         memcpy(&f2, &rx_msg.data[4], sizeof(float));
 
-                        // Get timestamp of reception of network data for timeout tracking
                         network_imu_data[p_idx].msTimeStamp = millis();
 
                         switch (msg_type) {
@@ -341,26 +352,22 @@ void SixthSense_IO::receiveTask() {
 }
 
 void SixthSense_IO::ledBlinkTask() {
-      // Wired = 5 Hz (1000ms period), Wireless = 1 Hz (200ms period)
       const uint32_t period_ms = wireless_mode_enabled ? 400 : 2000;
-      const uint32_t on_time_ms = period_ms / 10;         // 10% of the period
-      const uint32_t off_time_ms = period_ms - on_time_ms; // 90% of the period
+      const uint32_t on_time_ms = period_ms / 10;
+      const uint32_t off_time_ms = period_ms - on_time_ms;
 
       bool led_state = true;
       uint32_t last_toggle_ms = millis();
 
       while (1) {
             uint32_t now = millis();
-            // Consider data transfer active if not explicitly paused AND a frame was transmitted within the last 50ms
             bool transfer_active = (!tx_paused) && ((now - last_tx_activity_ms) < 50) && (last_tx_activity_ms > 0);
 
             if (!transfer_active) {
-                  // When data transfer is paused or idle, pause blinking and hold LED solid ON
                   led_state = true;
                   digitalWrite(PIN_STATUS_LED, LOW);
-                  last_toggle_ms = now; // Constantly reset the timer so it starts with a clean ON cycle when active
+                  last_toggle_ms = now;
             } else {
-                  // Determine how long we should wait based on whether the LED is currently ON or OFF
                   uint32_t current_interval = led_state ? on_time_ms : off_time_ms;
 
                   if ((now - last_toggle_ms) >= current_interval) {
@@ -423,24 +430,20 @@ void SixthSense_IO::printUARTData() {
 
             Fusion_Data_t &d = network_imu_data[i];
 
-            // Evaluate wireless packet drops and print debug data
             if (wifi_debug) {
-                  // Track consecutive reads of the exact same timestamp
                   if (d.msTimeStamp == channel_last_timestamp[i]) {
                         channel_repeat_count[i]++;
                   } else {
                         channel_last_timestamp[i] = d.msTimeStamp;
-                        channel_repeat_count[i] = 1; // First time seeing this packet
+                        channel_repeat_count[i] = 1;
                   }
 
                   // Ignore 1st read (count == 1) and single clock-drift slip (count == 2)
                   bool is_dropout = (channel_repeat_count[i] >= 3);
 
-                  // Update Totals
                   channel_total_expected[i]++;
                   if (is_dropout) channel_total_dropouts[i]++;
 
-                  // Update 10-second window buffer
                   uint32_t head = channel_window_head[i];
                   uint32_t byte_idx = head / 8;
                   uint8_t bit_idx = head % 8;
@@ -448,27 +451,23 @@ void SixthSense_IO::printUARTData() {
                   if (channel_window_expected[i] < WINDOW_SIZE_BITS) {
                         channel_window_expected[i]++;
                   } else {
-                        // Window is full, remove the oldest bit from our rolling dropout count
                         bool old_bit = (channel_window_buffer[i][byte_idx] & (1 << bit_idx)) != 0;
                         if (old_bit) channel_window_dropouts[i]--;
                   }
 
-                  // Write the new bit
                   if (is_dropout) {
                         channel_window_buffer[i][byte_idx] |= (1 << bit_idx);
                         channel_window_dropouts[i]++;
                   } else {
                         channel_window_buffer[i][byte_idx] &= ~(1 << bit_idx);
                   }
-                  
-                  // Advance circular buffer head
+
                   channel_window_head[i] = (head + 1) % WINDOW_SIZE_BITS;
 
-                  // Calculate metrics
                   float total_pct = (float)channel_total_dropouts[i] / channel_total_expected[i] * 100.0f;
                   float window_pct = (float)channel_window_dropouts[i] / channel_window_expected[i] * 100.0f;
 
-                  Serial.printf(",DBG[Tot:%lu/%lu(%.1f%%) 10s:%lu/%lu(%.1f%%)]", 
+                  Serial.printf(",DBG[Tot:%lu/%lu(%.1f%%) 10s:%lu/%lu(%.1f%%)]",
                                 channel_total_dropouts[i], channel_total_expected[i], total_pct,
                                 channel_window_dropouts[i], channel_window_expected[i], window_pct);
             }
@@ -487,7 +486,6 @@ void SixthSense_IO::printUARTData() {
             if (io_config.write_quat) {
                   Serial.printf(",%.4f,%.4f,%.4f,%.4f", d.q[0], d.q[1], d.q[2], d.q[3]);
             }
-            // Output SoC voltage after Quat
             if (wireless_mode_enabled) {
                   Serial.printf(",%d", network_soc_data[i]);
             }
@@ -521,20 +519,17 @@ void SixthSense_IO::printUARTData_Debug() {
 }
 
 uint16_t SixthSense_IO::assembleBinaryData(uint8_t* target_buf, size_t max_len) {
-      // Minimum frame: Magic(2) + Info(1) + Timestamp(4) + SensorID(2) + SoC(2) + Checksum(1) = 12 bytes
       if (!target_buf || max_len < 12) {
             return 0;
       }
 
       uint16_t offset = 0;
 
-      // 1. Calculate active sensors (Central + up to 14 peripherals = max 15)
       uint8_t active_count = 0;
       for (int i = 0; i <= io_config.num_peripherals; i++) {
             if (network_active_channel[i]) active_count++;
       }
 
-      // 2. Build Info Byte
       uint8_t flags = 0;
       if (io_config.write_accelGyro) flags |= (1 << 0);
       if (io_config.write_mag)       flags |= (1 << 1);
@@ -543,7 +538,6 @@ uint16_t SixthSense_IO::assembleBinaryData(uint8_t* target_buf, size_t max_len) 
 
       uint8_t info_byte = (active_count << 4) | (flags & 0x0F);
 
-      // 3. Write Magic Word (0xFD, 0xAC), Info Byte, and Timestamp
       target_buf[offset++] = 0xFD;
       target_buf[offset++] = 0xAC;
       target_buf[offset++] = info_byte;
@@ -552,7 +546,6 @@ uint16_t SixthSense_IO::assembleBinaryData(uint8_t* target_buf, size_t max_len) 
       memcpy(&target_buf[offset], &current_ms, sizeof(current_ms));
       offset += sizeof(current_ms);
 
-      // 4. Output sensor data sequentially
       for (int i = 0; i <= io_config.num_peripherals; i++) {
             if (!network_active_channel[i]) continue;
 
@@ -593,13 +586,11 @@ uint16_t SixthSense_IO::assembleBinaryData(uint8_t* target_buf, size_t max_len) 
                   offset += sizeof(q);
             }
 
-            // State of Charge Voltage (16bit int showing voltage in mV)
             uint16_t soc = network_soc_data[i];
             memcpy(&target_buf[offset], &soc, sizeof(soc));
             offset += sizeof(soc);
       }
 
-      // 5. Calculate XOR Checksum (excluding 2-byte magic word)
       uint8_t checksum = 0;
       for (uint16_t j = 2; j < offset; j++) {
             checksum ^= target_buf[j];
@@ -610,13 +601,10 @@ uint16_t SixthSense_IO::assembleBinaryData(uint8_t* target_buf, size_t max_len) 
 }
 
 bool SixthSense_IO::disassembleWirelessData(const uint8_t* src_buf, uint16_t len, const uint8_t* sender_mac) {
-      // Minimum frame: Magic(2) + Info(1) + Timestamp(4) + SensorID(2) + SoC(2) + Checksum(1) = 12 bytes
       if (!src_buf || len < 12) return false;
 
-      // 1. Check Magic Word
       if (src_buf[0] != 0xBC || src_buf[1] != 0xDF) return false;
 
-      // 2. Verify XOR Checksum
       uint8_t calc_checksum = 0;
       for (uint16_t j = 2; j < len - 1; j++) {
             calc_checksum ^= src_buf[j];
@@ -633,10 +621,8 @@ bool SixthSense_IO::disassembleWirelessData(const uint8_t* src_buf, uint16_t len
       bool has_euler = (flags & (1 << 2)) != 0;
       bool has_quat  = (flags & (1 << 3)) != 0;
 
-      // Skip 4-byte peripheral timestamp
       offset += sizeof(uint32_t);
 
-      // 3. Unpack sensor blocks and save into local network array
       for (uint8_t s = 0; s < active_count; s++) {
             if (offset + sizeof(uint16_t) > len - 1) return false;
 
@@ -644,11 +630,9 @@ bool SixthSense_IO::disassembleWirelessData(const uint8_t* src_buf, uint16_t len
             memcpy(&sensor_id, &src_buf[offset], sizeof(sensor_id));
             offset += sizeof(sensor_id);
 
-            // Check if sensor_id is in the Central's preconfigured peripheral list
             int p_idx = getPeripheralIndex(sensor_id);
             if (p_idx == -1) return false;
 
-            // If received over wireless, verify/pair peer dynamically up to max_peripherals
             if (wireless_mode_enabled && sender_mac != nullptr) {
                   if (!wireless.verifyAndRegisterPeer(sensor_id, sender_mac)) {
                         return false;
@@ -657,8 +641,6 @@ bool SixthSense_IO::disassembleWirelessData(const uint8_t* src_buf, uint16_t len
 
             Fusion_Data_t &d = network_imu_data[p_idx];
 
-            // Note: assembleBinaryData scaled accel by GRAVITY_ICM and gyro by DEG2RAD_ICM.
-            // Invert scaling on unpack so printUARTData() and assembleBinaryData() don't double-scale!
             if (has_ag) {
                   if (offset + 6 * sizeof(float) > len - 1) return false;
                   float ag[6];
@@ -707,16 +689,14 @@ bool SixthSense_IO::disassembleWirelessData(const uint8_t* src_buf, uint16_t len
                   d.q[3] = q[3];
             }
 
-            // Read State of Charge int
             if (offset + sizeof(uint16_t) > len - 1) return false;
             uint16_t soc = 0;
             memcpy(&soc, &src_buf[offset], sizeof(soc));
             offset += sizeof(soc);
 
-            if (wireless_mode_enabled){
+            if (wireless_mode_enabled) {
                   network_soc_data[p_idx] = soc;
-            }
-            else{
+            } else {
                   network_soc_data[p_idx] = 0;
             }
             d.msTimeStamp = millis();
@@ -727,7 +707,6 @@ bool SixthSense_IO::disassembleWirelessData(const uint8_t* src_buf, uint16_t len
 }
 
 void SixthSense_IO::printBinaryData() {
-      // Max size for 10 sensors * 70 bytes + 8 bytes overhead = 708 bytes
       uint8_t tx_buf[768];
       uint16_t len = assembleBinaryData(tx_buf, sizeof(tx_buf));
 
@@ -741,8 +720,8 @@ void SixthSense_IO::returnDefaultConfig(IO_Config_t &io_config) {
       io_config = {
             .local_can_id = 100,
             .peripheral_can_ids = {110, 120, 130, 140, 150, 160, 170, 180, 190},
-            .peripheral_timeout = 100, // default timeout after 100 ms
-            .num_peripherals = 4,     // Default 4 peripherals (configurable up to 9)
+            .peripheral_timeout = 100,
+            .num_peripherals = 4,
             .mode = NODE_CENTRAL,
             .CAN_1MHZ_en = 1,
             .write_accelGyro = 1,

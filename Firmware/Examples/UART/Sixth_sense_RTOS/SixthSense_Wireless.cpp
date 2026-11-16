@@ -34,41 +34,45 @@ void SixthSense_Wireless::initRadioOnly() {
 
       esp_wifi_set_max_tx_power(config.tx_power_quarter_dbm);
 
-      esp_now_peer_info_t broadcast_peer = {};
-      memcpy(broadcast_peer.peer_addr, BROADCAST_MAC, 6);
-      broadcast_peer.channel = config.wifi_channel;
-      broadcast_peer.ifidx = WIFI_IF_STA;
-      broadcast_peer.encrypt = false;
-      if (!esp_now_is_peer_exist(BROADCAST_MAC)) esp_now_add_peer(&broadcast_peer);
+      // Register broadcast peer only on Central (for emitting pairing beacons)
+      if (central_mode) {
+            esp_now_peer_info_t broadcast_peer = {};
+            memcpy(broadcast_peer.peer_addr, BROADCAST_MAC, 6);
+            broadcast_peer.channel = config.wifi_channel;
+            broadcast_peer.ifidx = WIFI_IF_STA;
+            broadcast_peer.encrypt = false;
+            if (!esp_now_is_peer_exist(BROADCAST_MAC)) {
+                  esp_now_add_peer(&broadcast_peer);
+            }
 
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0)
-      esp_now_rate_config_t rate_config = {
-            .phymode = config.enable_long_range_mode ? WIFI_PHY_MODE_LR : WIFI_PHY_MODE_11G,
-            .rate = config.phy_rate,
-            .ersu = false,
-            .dcm = false
-      };
-      esp_now_set_peer_rate_config(BROADCAST_MAC, &rate_config);
+            esp_now_rate_config_t rate_config = {
+                  .phymode = config.enable_long_range_mode ? WIFI_PHY_MODE_LR : WIFI_PHY_MODE_11G,
+                  .rate = config.phy_rate,
+                  .ersu = false,
+                  .dcm = false
+            };
+            esp_now_set_peer_rate_config(BROADCAST_MAC, &rate_config);
 #else
-      esp_wifi_config_espnow_rate(WIFI_IF_STA, config.phy_rate);
+            esp_wifi_config_espnow_rate(WIFI_IF_STA, config.phy_rate);
 #endif
+      }
 
-      if (central_mode) {
-            esp_wifi_set_ps(WIFI_PS_NONE);
-            esp_now_register_recv_cb(onDataRecv);
-      } else {
+      esp_wifi_set_ps(WIFI_PS_NONE);
+      // Both Central and Peripheral register recv_cb (Peripheral listens for Central's beacon)
+      esp_now_register_recv_cb(onDataRecv);
+
+      if (!central_mode) {
             tx_submitted = 0;
             tx_completed = 0;
             last_cb_ms = millis();
             dbg_last_cb_ms = last_cb_ms;
             esp_now_register_send_cb(onDataSent);
 
-            esp_wifi_set_ps(WIFI_PS_NONE);
-            //esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-            //esp_wifi_connectionless_module_set_wake_interval(65000); 
-            //esp_now_set_wake_window(1);
-
-            esp_now_unregister_recv_cb();
+            // Re-register Central unicast peer if radio was re-initialized mid-session
+            if (central_paired) {
+                  registerCentralPeer(central_mac);
+            }
       }
 }
 
@@ -82,9 +86,9 @@ void SixthSense_Wireless::reinitEspNowOnly() {
 
       Serial.printf("[Wireless-WDG] Resetting Wi-Fi/ESP-NOW (age=%lums)...\n", now - last_cb_ms);
 
-      // Exact same teardown as SixthSense_Wireless::stop() (which we know 100% recovers the link)
       esp_wifi_set_ps(WIFI_PS_NONE);
       esp_now_unregister_send_cb();
+      esp_now_unregister_recv_cb();
       esp_now_deinit();
       WiFi.mode(WIFI_OFF);
       vTaskDelay(pdMS_TO_TICKS(5));
@@ -93,11 +97,72 @@ void SixthSense_Wireless::reinitEspNowOnly() {
       recovery_count++;
 }
 
+bool SixthSense_Wireless::registerCentralPeer(const uint8_t *mac_addr) {
+      // Remove old Central peer if MAC changed
+      if (central_paired && memcmp(central_mac, mac_addr, 6) != 0) {
+            if (esp_now_is_peer_exist(central_mac)) {
+                  esp_now_del_peer(central_mac);
+            }
+            central_paired = false;
+      }
+
+      esp_now_peer_info_t peer = {};
+      memcpy(peer.peer_addr, mac_addr, 6);
+      peer.channel = config.wifi_channel;
+      peer.ifidx = WIFI_IF_STA;
+      peer.encrypt = false;
+
+      if (!esp_now_is_peer_exist(mac_addr)) {
+            if (esp_now_add_peer(&peer) != ESP_OK) {
+                  return false;
+            }
+      }
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0)
+      esp_now_rate_config_t rate_config = {
+            .phymode = config.enable_long_range_mode ? WIFI_PHY_MODE_LR : WIFI_PHY_MODE_11G,
+            .rate = config.phy_rate,
+            .ersu = false,
+            .dcm = false
+      };
+      esp_now_set_peer_rate_config(mac_addr, &rate_config);
+#else
+      esp_wifi_config_espnow_rate(WIFI_IF_STA, config.phy_rate);
+#endif
+
+      memcpy(central_mac, mac_addr, 6);
+      central_paired = true;
+      tx_submitted = 0;
+      last_cb_ms = millis();
+
+      if (wifi_debug) {
+            Serial.printf("[Wireless] Paired with Central %02X:%02X:%02X:%02X:%02X:%02X\n",
+                          mac_addr[0], mac_addr[1], mac_addr[2],
+                          mac_addr[3], mac_addr[4], mac_addr[5]);
+      }
+      return true;
+}
+
+void SixthSense_Wireless::unpairCentralPeer() {
+      if (central_paired) {
+            if (esp_now_is_peer_exist(central_mac)) {
+                  esp_now_del_peer(central_mac);
+            }
+            central_paired = false;
+            tx_submitted = 0;
+            if (wifi_debug) {
+                  Serial.println("[Wireless] Central beacon lost; pausing TX until beacon resumes.");
+            }
+      }
+}
+
 bool SixthSense_Wireless::begin(const Wireless_Config_t &w_config, bool is_central, const uint16_t *allowed_ids, uint8_t num_allowed_ids) {
       config = w_config;
       central_mode = is_central;
       allowed_id_count = num_allowed_ids;
       paired_peer_count = 0;
+      central_paired = false;
+      central_beacon_pending = false;
       wifi_debug = w_config.enable_wireless_debug;
 
       for (uint8_t i = 0; i < allowed_id_count; i++) {
@@ -127,9 +192,11 @@ bool SixthSense_Wireless::begin(const Wireless_Config_t &w_config, bool is_centr
                   xTaskCreatePinnedToCore(SoC_Task_Trampoline, "Wireless_SoC", 2048, this, 1, &soc_task_handle, 1);
             }
 
-            Serial.printf("[Wireless] ESP-NOW Ready (PERIPHERAL) | Ch: %u | TX Pwr: %.1f dBm\n", config.wifi_channel, config.tx_power_quarter_dbm * 0.25f);
+            Serial.printf("[Wireless] ESP-NOW Ready (PERIPHERAL - Waiting for Beacon) | Ch: %u | TX Pwr: %.1f dBm\n",
+                          config.wifi_channel, config.tx_power_quarter_dbm * 0.25f);
       } else {
-            Serial.printf("[Wireless] ESP-NOW Ready (CENTRAL) | Ch: %u | TX Pwr: %.1f dBm\n", config.wifi_channel, config.tx_power_quarter_dbm * 0.25f);
+            Serial.printf("[Wireless] ESP-NOW Ready (CENTRAL) | Ch: %u | TX Pwr: %.1f dBm\n",
+                          config.wifi_channel, config.tx_power_quarter_dbm * 0.25f);
       }
 
       return true;
@@ -140,6 +207,9 @@ void SixthSense_Wireless::stop() {
             vTaskDelete(soc_task_handle);
             soc_task_handle = NULL;
       }
+
+      central_paired = false;
+      central_beacon_pending = false;
 
       esp_wifi_set_ps(WIFI_PS_NONE);
 
@@ -152,6 +222,18 @@ void SixthSense_Wireless::stop() {
             vQueueDelete(rx_packet_queue);
             rx_packet_queue = NULL;
       }
+}
+
+void SixthSense_Wireless::pollCentralBeacon() {
+      if (!central_mode) return;
+
+      uint32_t now = millis();
+      if (now - last_beacon_tx_ms < BEACON_INTERVAL_MS) return;
+      last_beacon_tx_ms = now;
+
+      // 4-byte pairing beacon: Magic(0xBA, 0xBE) + Version(0x01) + XOR Checksum
+      uint8_t beacon[4] = { 0xBA, 0xBE, 0x01, (uint8_t)(0xBA ^ 0xBE ^ 0x01) };
+      esp_now_send(BROADCAST_MAC, beacon, sizeof(beacon));
 }
 
 void SixthSense_Wireless::SoC_Task_Trampoline(void *pvParameters) {
@@ -267,15 +349,33 @@ uint16_t SixthSense_Wireless::assembleSingleSensorBinary(uint8_t *target_buf, si
 
 bool SixthSense_Wireless::sendSensorPacket(uint16_t local_can_id, const Fusion_Data_t &imu_data, uint16_t soc_voltage,
                                            bool write_ag, bool write_mag, bool write_euler, bool write_quat) {
+      uint32_t now_ms = millis();
+
+      // Apply pending peer registration received from Central's beacon
+      if (central_beacon_pending) {
+            uint8_t mac_copy[6];
+            memcpy(mac_copy, pending_central_mac, 6);
+            central_beacon_pending = false;
+            registerCentralPeer(mac_copy);
+      }
+
+      // If Central beacon has timed out, unpair and go silent to conserve energy
+      if (central_paired && (now_ms - last_beacon_rx_ms > BEACON_TIMEOUT_MS)) {
+            unpairCentralPeer();
+      }
+
+      // Never transmit/broadcast until Central's beacon has been caught
+      if (!central_paired) {
+            dbg_tx_skipped++;
+            return false;
+      }
+
       uint8_t tx_buf[ESPNOW_MAX_PACKET_LEN];
       uint16_t len = assembleSingleSensorBinary(tx_buf, sizeof(tx_buf), local_can_id, imu_data, soc_voltage,
                                                 write_ag, write_mag, write_euler, write_quat);
       if (len == 0) return false;
 
-      uint32_t now_ms = millis();
-
-      // If MAC callback has been completely dead for >100 ms, reset Wi-Fi/ESP-NOW
-      // Note: Do NOT return early here—fall through so we immediately transmit on the fresh radio!
+      // If MAC callback has been completely dead for >100 ms while paired, reset Wi-Fi/ESP-NOW
       if (tx_submitted > 10 && (now_ms - last_cb_ms) > 100) {
             reinitEspNowOnly();
             now_ms = millis();
@@ -283,7 +383,9 @@ bool SixthSense_Wireless::sendSensorPacket(uint16_t local_can_id, const Fusion_D
 
       dbg_tx_attempts++;
       tx_submitted++;
-      esp_err_t err = esp_now_send(BROADCAST_MAC, tx_buf, len);
+
+      // Unicast exclusively to Central's MAC (enables hardware ACKs & retries)
+      esp_err_t err = esp_now_send(central_mac, tx_buf, len);
       if (err != ESP_OK) {
             dbg_tx_api_err++;
             dbg_last_err = err;
@@ -293,18 +395,18 @@ bool SixthSense_Wireless::sendSensorPacket(uint16_t local_can_id, const Fusion_D
             }
       }
 
-      if (wifi_debug){
-      // 1 Hz diagnostic summary
+      if (wifi_debug) {
             static uint32_t last_dbg_ms = 0;
             if (now_ms - last_dbg_ms >= 1000) {
                   uint32_t age = (now_ms >= last_cb_ms) ? (now_ms - last_cb_ms) : 0;
-                  Serial.printf("[P-DBG t=%lus] att:%lu | err:%lu (0x%X) | cb_ok:%lu | age:%lums | rec:%lu\n",
-                        now_ms / 1000, dbg_tx_attempts, dbg_tx_api_err, dbg_last_err,
-                        dbg_cb_ok, age, recovery_count);
+                  Serial.printf("[P-DBG t=%lus] att:%lu | err:%lu (0x%X) | cb_ok:%lu | cb_fail:%lu | age:%lums | rec:%lu\n",
+                                now_ms / 1000, dbg_tx_attempts, dbg_tx_api_err, dbg_last_err,
+                                dbg_cb_ok, dbg_cb_fail, age, recovery_count);
 
                   dbg_tx_attempts = 0;
                   dbg_tx_api_err = 0;
                   dbg_cb_ok = 0;
+                  dbg_cb_fail = 0;
                   last_dbg_ms = now_ms;
             }
       }
@@ -363,10 +465,26 @@ void SixthSense_Wireless::onDataSent(const uint8_t *mac_addr, esp_now_send_statu
 
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 void SixthSense_Wireless::onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingData, int len) {
-      if (!instance || !instance->rx_packet_queue || len <= 0 || len > ESPNOW_MAX_PACKET_LEN) return;
+      if (!instance || len <= 0 || len > ESPNOW_MAX_PACKET_LEN) return;
+      const uint8_t *src_mac = recv_info->src_addr;
+
+      // Peripheral mode: only listen for Central's 4-byte pairing beacon
+      if (!instance->central_mode) {
+            if (len == 4 && incomingData[0] == 0xBA && incomingData[1] == 0xBE &&
+                incomingData[3] == (uint8_t)(incomingData[0] ^ incomingData[1] ^ incomingData[2])) {
+                  instance->last_beacon_rx_ms = millis();
+                  if (!instance->central_paired || memcmp(instance->central_mac, src_mac, 6) != 0) {
+                        memcpy(instance->pending_central_mac, src_mac, 6);
+                        instance->central_beacon_pending = true;
+                  }
+            }
+            return;
+      }
+
+      if (!instance->rx_packet_queue) return;
 
       Wireless_Packet_t pkt;
-      memcpy(pkt.mac, recv_info->src_addr, 6);
+      memcpy(pkt.mac, src_mac, 6);
       memcpy(pkt.data, incomingData, len);
       pkt.len = (uint16_t)len;
 
@@ -378,7 +496,22 @@ void SixthSense_Wireless::onDataRecv(const esp_now_recv_info_t *recv_info, const
 }
 #else
 void SixthSense_Wireless::onDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
-      if (!instance || !instance->rx_packet_queue || len <= 0 || len > ESPNOW_MAX_PACKET_LEN) return;
+      if (!instance || len <= 0 || len > ESPNOW_MAX_PACKET_LEN) return;
+
+      // Peripheral mode: only listen for Central's 4-byte pairing beacon
+      if (!instance->central_mode) {
+            if (len == 4 && incomingData[0] == 0xBA && incomingData[1] == 0xBE &&
+                incomingData[3] == (uint8_t)(incomingData[0] ^ incomingData[1] ^ incomingData[2])) {
+                  instance->last_beacon_rx_ms = millis();
+                  if (!instance->central_paired || memcmp(instance->central_mac, mac_addr, 6) != 0) {
+                        memcpy(instance->pending_central_mac, mac_addr, 6);
+                        instance->central_beacon_pending = true;
+                  }
+            }
+            return;
+      }
+
+      if (!instance->rx_packet_queue) return;
 
       Wireless_Packet_t pkt;
       memcpy(pkt.mac, mac_addr, 6);
@@ -396,57 +529,34 @@ void SixthSense_Wireless::onDataRecv(const uint8_t *mac_addr, const uint8_t *inc
 void SixthSense_Wireless::returnDefaultConfig(Wireless_Config_t &w_config) {
       w_config = {
             .wifi_channel = 11,
-            .tx_power_quarter_dbm = 32,
+            .tx_power_quarter_dbm = 48,        // +12 dBm
             .phy_rate = WIFI_PHY_RATE_24M,
             .enable_long_range_mode = false,
             .enable_wireless_debug = false
       };
 }
 
-/**
-     * Computes State of Charge (0-100) from a millivolt measurement.
-     *
-     * Rules:
-     * - 1650 mV to 1900 mV maps linearly to 0 - 100.
-     * - 1900 mV to 2000 mV outputs 200 (as specified).
-     * - Below 1650 mV outputs 0.
-     * - Hysteresis: SoC cannot increase unless voltage exceeds 2000 mV
-     *   (indicating an external charge source).
-     */
 uint16_t SixthSense_Wireless::computeStateOfCharge(uint16_t voltage_mv) {
-      // Track the lowest reported SoC; initialize to a value above max normal SoC (100)
-      // so the very first reading establishes the baseline.
       static uint16_t latched_soc = 200;
       static bool is_charging = false;
 
-      // 1. Check for external charge source (> 2000 mV)
       if (voltage_mv > 2000) {
             is_charging = true;
             latched_soc = 200;
             return 200;
       }
 
-      // Once voltage drops below 1900 mV, clear the active charging latch
       is_charging = false;
 
-      // 2. Check the 1900 mV to 2000 mV band
       if (voltage_mv >= 1920) {
             return 100;
       }
 
-      // Once voltage drops below 1900 mV, clear the active charging latch
-      
-
-      // 3. Calculate raw linear SoC for 1650 mV - 1900 mV
       uint16_t raw_soc = 0;
       if (voltage_mv > 1650) {
-            // Use uint32_t to prevent overflow during multiplication (250 * 100 = 25,000, fits in u16, 
-            // but u32 is safer practice for fixed-point scaling).
-            // Formula: ((voltage_mv - 1650) * 100) / (1900 - 1650)
             raw_soc = static_cast<uint16_t>((static_cast<uint32_t>(voltage_mv - 1650) * 100U) / 270U);
       }
 
-      // 4. Enforce downward-only hysteresis while not charging
       if (raw_soc < latched_soc) {
             latched_soc = raw_soc;
       }
