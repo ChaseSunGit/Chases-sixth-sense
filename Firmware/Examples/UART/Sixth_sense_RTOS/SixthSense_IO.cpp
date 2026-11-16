@@ -223,8 +223,9 @@ void SixthSense_IO::transmitTask() {
                   if (io_config.mode == NODE_CENTRAL) {
                         last_tx_activity_ms = millis();
 
+                        // Emit 200Hz TDMA sync & pairing beacon at the start of each frame
                         if (wireless_mode_enabled) {
-                              wireless.pollCentralBeacon();
+                              wireless.pollCentralBeacon(io_config.peripheral_can_ids, io_config.num_peripherals);
                         }
 
                         // Before sending data over uart, mark timed out network peripherals inactive
@@ -243,7 +244,7 @@ void SixthSense_IO::transmitTask() {
                         }
                   } else if (io_config.mode == NODE_PERIPHERAL) {
                         if (wireless_mode_enabled) {
-                              // Only transmits once Central's beacon has been caught
+                              // Waits for assigned TDMA slot and transmits only when paired
                               bool sent = wireless.sendSensorPacket(
                                     base,
                                     local_imu_data,
@@ -721,7 +722,7 @@ void SixthSense_IO::returnDefaultConfig(IO_Config_t &io_config) {
             .local_can_id = 100,
             .peripheral_can_ids = {110, 120, 130, 140, 150, 160, 170, 180, 190},
             .peripheral_timeout = 100,
-            .num_peripherals = 4,
+            .num_peripherals = MAX_PERIPHERAL_NODES,
             .mode = NODE_CENTRAL,
             .CAN_1MHZ_en = 1,
             .write_accelGyro = 1,

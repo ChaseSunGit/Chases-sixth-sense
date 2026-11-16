@@ -18,12 +18,12 @@
 #include <cstdint>
 #include "SixthSense_IMU.h"
 
-#define ESPNOW_MAX_PERIPHERALS 9
-#define ESPNOW_MAX_PACKET_LEN  128
-#define BEACON_INTERVAL_MS     500   // Central broadcasts pairing beacon at 2 Hz
-#define BEACON_TIMEOUT_MS      3000  // Peripheral stops TX if no beacon heard for 3s
+#define ESPNOW_MAX_PERIPHERALS   9
+#define ESPNOW_MAX_PACKET_LEN    128
+#define BEACON_INTERVAL_MS       500   // Central broadcasts pairing beacon at 2 Hz (negligible airtime)
+#define BEACON_TIMEOUT_MS        3000  // Peripheral stops TX if no beacon heard for 3s
 
-#define PIN_SOC_ADC            GPIO_NUM_18
+#define PIN_SOC_ADC              GPIO_NUM_18
 
 // Raw packet wrapper passed from ESP-NOW callback to IO RX task
 struct Wireless_Packet_t {
@@ -43,7 +43,7 @@ struct Discovered_Peer_t {
 struct Wireless_Config_t {
       uint8_t wifi_channel;               // 1 - 11 (Pick 1, 6, or 11 to avoid Wi-Fi overlap)
       int8_t tx_power_quarter_dbm;        // 8 to 84 (48 = +12 dBm)
-      wifi_phy_rate_t phy_rate;           // WIFI_PHY_RATE_6M recommended for sensitivity
+      wifi_phy_rate_t phy_rate;           // WIFI_PHY_RATE_24M recommended for low airtime
       bool enable_long_range_mode;
       bool enable_wireless_debug;
 };
@@ -55,10 +55,10 @@ public:
       bool begin(const Wireless_Config_t &w_config, bool is_central, const uint16_t *allowed_ids, uint8_t num_allowed_ids);
       void stop();
 
-      // Central: call periodically (e.g. from 200Hz loop) to emit 2Hz pairing beacon
-      void pollCentralBeacon();
+      // Central: call periodically from 200Hz loop (internally rate-limited to 2 Hz)
+      void pollCentralBeacon(const uint16_t *peripheral_ids = nullptr, uint8_t num_peripherals = 0);
 
-      // Peripheral: transmits unicast to Central only after Central's beacon is captured
+      // Peripheral: non-blocking unicast transmit once Central's beacon is captured
       bool sendSensorPacket(uint16_t local_can_id, const Fusion_Data_t &imu_data, uint16_t soc_voltage,
                             bool write_ag, bool write_mag, bool write_euler, bool write_quat);
 

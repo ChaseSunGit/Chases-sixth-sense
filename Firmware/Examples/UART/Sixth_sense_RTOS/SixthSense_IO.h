@@ -34,7 +34,7 @@ struct IO_Config_t {
       uint16_t local_can_id;                              // 11-bit Base ID (multiple of 10, max 2040)
       uint16_t peripheral_can_ids[MAX_PERIPHERAL_NODES];  // 11-bit Base IDs for up to 9 peripherals
       int peripheral_timeout;                             // Milliseconds elapsed after valid measurement to mark peripheral inactive, 0 means no timeout
-      uint8_t num_peripherals;                            // Number of configured peripherals (default 4, max 9)
+      uint8_t num_peripherals;                            // Number of configured peripherals (default 9, max 9)
       NodeMode mode;                                      // 0: Central, 1: Peripheral
       bool CAN_1MHZ_en;                                   // Enable 1MHz CAN speed, default enable
       bool write_accelGyro;
