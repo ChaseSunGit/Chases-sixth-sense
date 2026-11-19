@@ -468,10 +468,10 @@ void SixthSense_IO::printUARTData() {
                   float total_pct = (float)channel_total_dropouts[i] / channel_total_expected[i] * 100.0f;
                   float window_pct = (float)channel_window_dropouts[i] / channel_window_expected[i] * 100.0f;
 
-                  //Serial.printf(",DBG[Tot:%lu/%lu(%.1f%%) 10s:%lu/%lu(%.1f%%)]",
-                                //channel_total_dropouts[i], channel_total_expected[i], total_pct,
-                                //channel_window_dropouts[i], channel_window_expected[i], window_pct);
-                  Serial.printf(",%lu,%lu,%.4f",channel_window_dropouts[i], channel_window_expected[i], window_pct);
+                  Serial.printf(",DBG[Tot:%lu/%lu(%.1f%%) 10s:%lu/%lu(%.1f%%)]",
+                                channel_total_dropouts[i], channel_total_expected[i], total_pct,
+                                channel_window_dropouts[i], channel_window_expected[i], window_pct);
+                  //Serial.printf(",%lu,%lu,%.4f",channel_window_dropouts[i], channel_window_expected[i], window_pct);
             }
 
             if (io_config.write_accelGyro) {
